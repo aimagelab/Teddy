@@ -4,10 +4,14 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PIL import Image
+import torch
 from torch.utils.data import Dataset
 import msgpack
 from tqdm import tqdm
 from torchvision import transforms as T
+from torch.nn.utils.rnn import pad_sequence
+from torch.nn.functional import pad
+from einops import rearrange
 
 
 def get_alphabet(labels):
@@ -16,6 +20,11 @@ def get_alphabet(labels):
     unq = [''.join(i) for i in itertools.product(unq, repeat=1)]
     alph = dict(zip(unq, range(len(unq))))
     return alph
+
+
+def pad_images(images, padding_value=1):
+    images = [rearrange(img, 'c h w -> w c h') for img in images]
+    return rearrange(pad_sequence(images, padding_value=padding_value), 'w b c h -> b c h w')
 
 
 class ResizeFixedHeight(object):
@@ -28,6 +37,19 @@ class ResizeFixedHeight(object):
         new_w = int(w / ratio)
         img = img.resize((new_w, self.height), Image.BILINEAR)
         return img
+
+
+class PadNextDivisible(object):
+    def __init__(self, divisible, padding_value=1):
+        self.divisible = divisible
+        self.padding_value = padding_value
+
+    def __call__(self, img):
+        width = img.shape[-1]
+        if width % self.divisible == 0:
+            return img
+        pad_width = self.divisible - width % self.divisible
+        return pad(img, (0, pad_width), value=self.padding_value)
 
 
 class Base_dataset(Dataset):
@@ -73,7 +95,17 @@ class Base_dataset(Dataset):
         same_author_img_len = same_author_img.shape[-1]
         other_author_img_len = other_author_img.shape[-1]
 
-        return style_img, style_img_len, style_text, same_author_img, same_author_img_len, other_author_img, other_author_img_len, single_author
+        sample = {
+            'style_img': style_img,
+            'style_img_len': style_img_len,
+            'style_text': style_text,
+            'same_author_img': same_author_img,
+            'same_author_img_len': same_author_img_len,
+            'other_author_img': other_author_img,
+            'other_author_img_len': other_author_img_len,
+            'single_author': single_author,
+        }
+        return sample
 
     def load_img_sizes(self, img_sizes_path):
         if img_sizes_path.exists():
@@ -108,6 +140,10 @@ class IAM_dataset(Base_dataset):
         self.imgs_to_label = {el.attrib['id']: el.attrib['text'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
         self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
 
+        img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
+        self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+        assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
+
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
 
@@ -132,9 +168,6 @@ class IAM_dataset(Base_dataset):
         assert len(self.imgs) > 0, f'No images found in {path}'
         self.char_to_idx = get_alphabet(self.imgs_to_label.values())
         self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
-
-        img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
-        self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
 
         if max_width and max_height:
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
@@ -166,8 +199,9 @@ class Msgpack_dataset(Base_dataset):
         self.char_to_idx = charset['char2idx']
         self.idx_to_char = charset['idx2char']
 
-        img_sizes_path = Path(path, 'img_sizes.msgpack')
+        img_sizes_path = Path(path, f'{nameset}_img_sizes.msgpack')
         self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+        assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
 
         if max_width and max_height:
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
@@ -224,25 +258,30 @@ class Leopardi_dataset(Msgpack_dataset):
 
 
 class MergedDataset(Dataset):
-    def __init__(self, datasets, ralph=None):
+    def __init__(self, datasets, idx_to_char=None):
         super().__init__()
         self.datasets = datasets
-        if ralph:
-            self.idx_to_char = ralph
+        if idx_to_char:
+            self.idx_to_char = idx_to_char
             self.char_to_idx = dict(zip(self.idx_to_char.values(), self.idx_to_char.keys()))
         else:
-            self.char_to_idx = get_alphabet([''.join(list(d.ralph.values())) for d in datasets])
+            self.char_to_idx = get_alphabet([''.join(list(d.idx_to_char.values())) for d in datasets])
             self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
         for dataset in self.datasets:
-            dataset.alph = self.char_to_idx
-            dataset.ralph = self.idx_to_char
+            dataset.char_to_idx = self.char_to_idx
+            dataset.idx_to_char = self.idx_to_char
 
     @property
-    def labels_dict(self):
-        result = {}
-        for dataset in self.datasets:
-            result.update(dataset.labels_dict)
-        return result
+    def labels(self):
+        return [label for dataset in self.datasets for label in dataset.imgs_to_label.values()]
+
+    @property
+    def vocab_size(self):
+        return len(self.char_to_idx)
+
+    @property
+    def alphabet(self):
+        return ''.join(sorted(self.char_to_idx.keys()))
 
     @property
     def imgs(self):
@@ -258,6 +297,57 @@ class MergedDataset(Dataset):
             else:
                 idx -= len(dataset)
         raise IndexError('Index out of range')
+
+    def collate_fn(self, batch):
+        collate_batch = {}
+        collate_batch['style_imgs'] = pad_images([sample['style_img'] for sample in batch])
+        collate_batch['style_imgs_len'] = torch.IntTensor([sample['style_img_len'] for sample in batch])
+        collate_batch['style_texts'] = [sample['style_text'] for sample in batch]
+        collate_batch['same_author_imgs'] = pad_images([sample['same_author_img'] for sample in batch])
+        collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
+        collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
+        collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
+        collate_batch['single_authors'] = torch.BoolTensor([sample['single_author'] for sample in batch])
+        return collate_batch
+
+
+def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_height=32, divisible=16, max_width=None):
+    assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
+    transform = T.Compose([
+        ResizeFixedHeight(resize_height),
+        T.ToTensor(),
+        PadNextDivisible(16),
+        T.Normalize((0.5,), (0.5,))
+    ])
+
+    datasets_list = []
+    kwargs = {'max_width': max_width, 'max_height': resize_height, 'transform': transform, 'nameset': nameset}
+    for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
+        if name.lower() == 'iam_words':
+            datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
+        elif name.lower() == 'iam_lines':
+            datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
+        elif name.lower() == 'rimes':
+            datasets_list.append(Rimes_dataset(path, **kwargs))
+        elif name.lower() == 'icfhr16':
+            datasets_list.append(ICFHR16_dataset(path, **kwargs))
+        elif name.lower() == 'icfhr14':
+            datasets_list.append(ICFHR14_dataset(path, **kwargs))
+        elif name.lower() == 'lam':
+            datasets_list.append(LAM_dataset(path, **kwargs))
+        elif name.lower() == 'rodrigo':
+            datasets_list.append(Rodrigo_dataset(path, **kwargs))
+        elif name.lower() == 'saintgall':
+            datasets_list.append(SaintGall_dataset(path, **kwargs))
+        elif name.lower() == 'washington':
+            datasets_list.append(Washington_dataset(path, **kwargs))
+        elif name.lower() == 'leopardi':
+            datasets_list.append(Leopardi_dataset(path, **kwargs))
+        elif name.lower() == 'norhand':
+            datasets_list.append(Norhand_dataset(path, **kwargs))
+        else:
+            raise ValueError(f'Unknown dataset {name}')
+    return MergedDataset(datasets_list, idx_to_char)
 
 
 if __name__ == '__main__':

@@ -271,21 +271,22 @@ class Teddy(torch.nn.Module):
         self.discriminator = TeddyDiscriminator((img_height, discriminator_width), (img_height, patch_width), dim=dim,
                                                 expantion_factor=expantion_factor)
 
-    def forward(self, style_imgs, style_imgs_len, style_text, gen_text, same_author_imgs, same_author_imgs_len, other_author_imgs, other_author_imgs_len):
-        enc_style_text, _ = self.text_converter.encode(style_text)
-        enc_gen_text, _ = self.text_converter.encode(gen_text)
+    def forward(self, batch):
+        # style_imgs, style_imgs_len, style_text, gen_text, same_author_imgs, same_author_imgs_len, other_author_imgs, other_author_imgs_len
+        enc_style_text, _ = self.text_converter.encode(batch['style_texts'])
+        enc_gen_text, _ = self.text_converter.encode(batch['gen_texts'])
 
         style_tgt = self.unifont_embedding(enc_style_text)
         gen_tgt = self.unifont_embedding(enc_gen_text)
 
-        src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
+        src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
         fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
 
         real_fake_pred, same_other_pred = self.discriminator(
-            style_imgs, style_imgs_len,
-            same_author_imgs, same_author_imgs_len,
-            other_author_imgs, other_author_imgs_len,
-            fakes[:, 0], gen_text  # Take only the first image of each expansion
+            batch['style_imgs'], batch['style_imgs_len'],
+            batch['same_author_imgs'], batch['same_author_imgs_len'],
+            batch['other_author_imgs'], batch['other_author_imgs_len'],
+            fakes[:, 0], batch['gen_texts']  # Take only the first image of each expansion
         )
 
         fakes_exp = rearrange(fakes, 'b e c h w -> (b e) c h w')
@@ -294,4 +295,13 @@ class Teddy(torch.nn.Module):
 
         gen_tgt = repeat(gen_tgt, 'b l d -> (b e) l d', e=self.expantion_factor)
         gen_style_emb = self.generator.forward_style(fakes_exp, gen_tgt)
-        return fakes, real_fake_pred, same_other_pred, text_pred, src_style_emb, gen_style_emb
+
+        results = {
+            'fakes': fakes,
+            'real_fake_pred': real_fake_pred,
+            'same_other_pred': same_other_pred,
+            'text_pred': text_pred,
+            'src_style_emb': src_style_emb,
+            'gen_style_emb': gen_style_emb,
+        }
+        return results
