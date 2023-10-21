@@ -39,6 +39,7 @@ class CTCLabelConverter(nn.Module):
 
     def decode(self, labels, length):
         texts = []
+        assert len(labels) == len(length)
         for lbl, lbl_len in zip(labels, length):
             char_list = []
             for i in range(lbl_len):
@@ -197,8 +198,8 @@ class TeddyDiscriminator(torch.nn.Module):
 
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout)
         self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth, enable_nested_tensor=False)  # TODO check enable nested tensor
-        self.fc_real_fake = nn.Linear(dim, 2)
-        self.fc_same_other = nn.Linear(dim, 2)
+        self.fc_real_fake = nn.Linear(dim, 1)
+        self.fc_same_other = nn.Linear(dim, 1)
 
     def forward(self, src_1_real, src_1_real_len, src_2_real, src_2_real_len, tgt_1_real, tgt_1_real_len, tgt_1_fake, fake_texts):
         # source image  target img      author  source
@@ -274,24 +275,25 @@ class Teddy(torch.nn.Module):
     def forward(self, batch):
         # style_imgs, style_imgs_len, style_text, gen_text, same_author_imgs, same_author_imgs_len, other_author_imgs, other_author_imgs_len
         enc_style_text, _ = self.text_converter.encode(batch['style_texts'])
-        enc_gen_text, _ = self.text_converter.encode(batch['gen_texts'])
+        enc_gen_texts, enc_gen_texts_len = self.text_converter.encode(batch['gen_texts'])
 
         style_tgt = self.unifont_embedding(enc_style_text)
-        gen_tgt = self.unifont_embedding(enc_gen_text)
+        gen_tgt = self.unifont_embedding(enc_gen_texts)
 
         src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
         fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
 
         real_fake_pred, same_other_pred = self.discriminator(
-            batch['style_imgs'], batch['style_imgs_len'],
-            batch['same_author_imgs'], batch['same_author_imgs_len'],
-            batch['other_author_imgs'], batch['other_author_imgs_len'],
+            batch['style_imgs'], batch['style_imgs_len'].int(),
+            batch['same_author_imgs'], batch['same_author_imgs_len'].int(),
+            batch['other_author_imgs'], batch['other_author_imgs_len'].int(),
             fakes[:, 0], batch['gen_texts']  # Take only the first image of each expansion
         )
 
         fakes_exp = rearrange(fakes, 'b e c h w -> (b e) c h w')
-        text_pred = self.ocr(fakes_exp)
-        text_pred = rearrange(text_pred, '(b e) l c -> b e l c', e=self.expantion_factor)
+        texts_pred = self.ocr(fakes_exp)
+        enc_gen_texts = repeat(enc_gen_texts, 'b w -> (b e) w', e=self.expantion_factor)
+        enc_gen_texts_len = repeat(enc_gen_texts_len, 'b -> (b e)', e=self.expantion_factor)
 
         gen_tgt = repeat(gen_tgt, 'b l d -> (b e) l d', e=self.expantion_factor)
         gen_style_emb = self.generator.forward_style(fakes_exp, gen_tgt)
@@ -300,8 +302,10 @@ class Teddy(torch.nn.Module):
             'fakes': fakes,
             'real_fake_pred': real_fake_pred,
             'same_other_pred': same_other_pred,
-            'text_pred': text_pred,
+            'texts_pred': texts_pred,
             'src_style_emb': src_style_emb,
             'gen_style_emb': gen_style_emb,
+            'enc_gen_texts': enc_gen_texts,
+            'enc_gen_texts_len': enc_gen_texts_len,
         }
         return results

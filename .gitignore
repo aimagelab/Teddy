@@ -1,3 +1,4 @@
 *.pyc
 .vscode
 *.pth
+test_sampled_text

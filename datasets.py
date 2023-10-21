@@ -81,8 +81,8 @@ class Base_dataset(Dataset):
         same_author_img_path = random.choice(list(same_author_imgs))
         same_author_img = Image.open(same_author_img_path).convert('RGB')
 
-        single_author = len(other_author_imgs) == 0
-        other_author_imgs = same_author_imgs if single_author else other_author_imgs
+        multi_author = len(other_author_imgs) > 0
+        other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
         other_author_img_path = random.choice(list(other_author_imgs))
         other_author_img = Image.open(other_author_img_path).convert('RGB')
 
@@ -103,7 +103,7 @@ class Base_dataset(Dataset):
             'same_author_img_len': same_author_img_len,
             'other_author_img': other_author_img,
             'other_author_img_len': other_author_img_len,
-            'single_author': single_author,
+            'multi_author': multi_author,
         }
         return sample
 
@@ -307,7 +307,7 @@ class MergedDataset(Dataset):
         collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
         collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
         collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
-        collate_batch['single_authors'] = torch.BoolTensor([sample['single_author'] for sample in batch])
+        collate_batch['multi_authors'] = torch.BoolTensor([sample['multi_author'] for sample in batch])
         return collate_batch
 
 

@@ -250,7 +250,7 @@ class OrigamiNet(nn.Module):
         self.gc = GradCheck
         self.reduceAxis = reduceAxis
 
-    def forward(self, x, t=[]):
+    def forward(self, x):
         x = self.Initsq(x)
 
         if self.gc >= 2:
