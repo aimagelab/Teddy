@@ -10,8 +10,8 @@ import numpy as np
 
 device = 'cuda:0'
 
-checkpoint_a = torch.load('files/f745_all_datasets/0315000_iter.pth', map_location=device)
-checkpoint_b = torch.load('files/f745_all_datasets/0155000_iter.pth', map_location=device)
+checkpoint_a = torch.load('files/f745_all_datasets/0345000_iter.pth', map_location=device)
+checkpoint_b = torch.load('files/0ea8_all_datasets/0345000_iter.pth', map_location=device)
 
 o_classes = len(checkpoint_a['charset'])
 
@@ -22,10 +22,10 @@ ocr = OrigamiNet(o_classes + 1).to(device)
 ocr_scheduler = CheckpointScheduler(ocr, checkpoint_a['model'], checkpoint_b['model'])
 ocr.eval()
 
-# dataset_name, dataset_path = ['iam_lines'], ['/mnt/ssd/datasets/IAM']
-dataset_name, dataset_path = ['lam'], ['/mnt/ssd/datasets/LAM_msgpack']
+dataset_name, dataset_path = ['iam_lines'], ['/mnt/ssd/datasets/IAM']
+# dataset_name, dataset_path = ['lam'], ['/mnt/ssd/datasets/LAM_msgpack']
 dataset = dataset_factory(dataset_name, dataset_path, 'val', max_width=3000)
-loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=4, collate_fn=dataset.collate_fn)
+loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4, collate_fn=dataset.collate_fn)
 ctc_criterion = torch.nn.CTCLoss(reduction='sum', zero_infinity=True).to(device)
 
 
@@ -48,7 +48,7 @@ with torch.inference_mode():
         length_of_gt = 0
         infer_time = 0
 
-        ocr_scheduler.step(alpha)
+        ocr_scheduler._step(alpha)
         for batch_idx, batch in enumerate(loader):
             style_imgs = batch['style_imgs'].to(device)
             texts_enc, texts_enc_len = converter.encode(batch['style_texts'])
@@ -69,7 +69,7 @@ with torch.inference_mode():
             preds_size = preds_size.cpu().numpy() - (np.flip(preds_index, 1) > 0).argmax(-1)
             preds_str = converter.decode(preds_index, preds_size)
 
-            # total_loss += ctc_loss.item()
+            total_loss += ctc_loss.item()
             total_count += len(batch['style_texts'])
 
             for pred, gt in zip(preds_str, batch['style_texts']):

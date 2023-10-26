@@ -1,0 +1,44 @@
+------------ Options -------------
+port: 12345
+manualSeed: 1111
+dist: DDP
+n_channels: 3
+GradCheck: 0
+max_w: 750
+max_h: 750
+nch: 1
+prjAug: False
+prjVal: 125
+resize_height: 32
+max_width: 1800
+experiment_name: 0259_all_datasets_lr0.01_32_1800
+AMP: False
+WdB: True
+check_mem: False
+wdbprj: Origami
+root_path: /mnt/beegfs/work/FoMo_AIISDH/datasets
+datasets_path: [PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/IAM'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/Norhand'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/Rimes'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/ICFHR16'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/ICFHR14'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/LAM_msgpack'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/Rodrigo'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/SaintGall'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/Washington'), PosixPath('/mnt/beegfs/work/FoMo_AIISDH/datasets/LEOPARDI/leopardi')]
+datasets: ['iam_lines', 'norhand', 'rimes', 'icfhr16', 'icfhr14', 'lam', 'rodrigo', 'saintgall', 'washington', 'leopardi']
+optim: adamw
+train_batch_size: 8
+val_batch_size: 8
+workers: 4
+lr: 0.01
+continue_model: 
+valInterval: 5000
+num_iter: 0
+ckpt_count: 100
+saved_models: saved_models
+nlyrs: 12
+wmul: 1.0
+lszs: {0: 128, 2: 256, 4: 512, 11: 256}
+kernel_size: (2, 2)
+mode: bilinear
+align_corners: False
+fup: 33
+lreszs: {0: MaxPool2d(kernel_size=(2, 2), stride=(2, 2), padding=0, dilation=1, ceil_mode=False), 2: MaxPool2d(kernel_size=(2, 2), stride=(2, 2), padding=0, dilation=1, ceil_mode=False), 4: MaxPool2d(kernel_size=(2, 2), stride=(2, 2), padding=0, dilation=1, ceil_mode=False), 6: PadPool(), 8: PadPool(), 10: Upsample(size=(450, 15), mode='bilinear'), 11: Upsample(size=(1100, 8), mode='bilinear')}
+InitBlock_n_channels: 1
+GateBlock_GradCheck: 0
+num_gpu: 1
+o_classes: 172
+----------------------------------n

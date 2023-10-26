@@ -311,12 +311,13 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_height=32, divisible=16, max_width=None):
+def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_height=32, divisible=16, max_width=None, channels=3):
     assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
     transform = T.Compose([
         ResizeFixedHeight(resize_height),
+        T.Grayscale() if channels == 1 else T.Lambda(lambda x: x),
         T.ToTensor(),
-        PadNextDivisible(16),
+        PadNextDivisible(divisible),
         T.Normalize((0.5,), (0.5,))
     ])
 
