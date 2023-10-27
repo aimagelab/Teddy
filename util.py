@@ -4,6 +4,7 @@ import math
 from itertools import pairwise, zip_longest
 from collections import defaultdict, Counter
 from einops import repeat
+from torch.nn import functional as F
 
 
 def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
@@ -235,3 +236,60 @@ class TextSampler:
         random_words = random.choices(self.words, weights=self.words_weights, k=self.words_per_line * batch_size)
         sampled_lines = [' '.join(chunk) for chunk in grouper(random_words, self.words_per_line)]
         return sampled_lines
+
+
+class WarmupLRScheduler:
+    def __init__(self, optimizer, warmup_epochs, target_lr):
+        """
+        Create a linear warm-up learning rate scheduler as a class.
+
+        Args:
+            optimizer (torch.optim.Optimizer): The optimizer for which the learning rate will be adjusted.
+            warmup_epochs (int): The number of epochs for the warm-up phase.
+            target_lr (float): The target learning rate after warm-up.
+        """
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.target_lr = target_lr
+
+        def lr_lambda(current_epoch):
+            if current_epoch < self.warmup_epochs:
+                return (current_epoch + 1) / self.warmup_epochs * self.target_lr
+            else:
+                return self.target_lr
+
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+
+    def step(self):
+        """Update the learning rate for the current epoch."""
+        self.scheduler.step()
+
+
+def loss_hinge_dis(dis_fake, dis_real):
+    loss_real = torch.mean(F.relu(1. - dis_real))
+    loss_fake = torch.mean(F.relu(1. + dis_fake))
+    return loss_real, loss_fake
+
+
+def loss_hinge_gen(dis_fake):
+    loss_fake = -torch.mean(dis_fake)
+    return loss_fake
+
+
+class GradSwitch:
+    def __init__(self, model, target_model):
+        self.model = model
+        self.target_model = target_model
+
+    @staticmethod
+    def _set_grad(model, requires_grad):
+        for param in model.parameters():
+            param.requires_grad = requires_grad
+
+    def __enter__(self):
+        self._set_grad(self.model, False)
+        self._set_grad(self.target_model, True)
+        return self.target_model
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._set_grad(self.model, True)
