@@ -65,44 +65,47 @@ class Base_dataset(Dataset):
         self.idx_to_char = {}
         self.author_to_imgs = {}
         self.imgs_set = set()
+        self.preloaded = False
 
     def __len__(self):
         return len(self.imgs)
 
     def __getitem__(self, idx):
         style_img_path = self.imgs[idx]
-        style_img = Image.open(style_img_path).convert('RGB')
         style_text = self.imgs_to_label[style_img_path.stem]
 
         author = self.imgs_to_author[style_img_path.stem]
         same_author_imgs = self.author_to_imgs[author]
         other_author_imgs = self.imgs_set - same_author_imgs
 
-        same_author_img_path = random.choice(list(same_author_imgs))
-        same_author_img = Image.open(same_author_img_path).convert('RGB')
+        # same_author_img_path = random.choice(list(same_author_imgs))
+        # same_author_img = Image.open(same_author_img_path).convert('RGB')
 
         multi_author = len(other_author_imgs) > 0
-        other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
-        other_author_img_path = random.choice(list(other_author_imgs))
-        other_author_img = Image.open(other_author_img_path).convert('RGB')
+        # other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
+        # other_author_img_path = random.choice(list(other_author_imgs))
+        # other_author_img = Image.open(other_author_img_path).convert('RGB')
 
-        if self.transform:
-            style_img = self.transform(style_img)
-            same_author_img = self.transform(same_author_img)
-            other_author_img = self.transform(other_author_img)
+        if not self.preloaded:
+            style_img = Image.open(style_img_path).convert('RGB')
+            style_img = self.transform(style_img) if self.transform else style_img
+            # same_author_img = self.transform(same_author_img)
+            # other_author_img = self.transform(other_author_img)
+        else:
+            style_img = self.imgs_preloaded[idx]
 
         style_img_len = style_img.shape[-1]
-        same_author_img_len = same_author_img.shape[-1]
-        other_author_img_len = other_author_img.shape[-1]
+        # same_author_img_len = same_author_img.shape[-1]
+        # other_author_img_len = other_author_img.shape[-1]
 
         sample = {
             'style_img': style_img,
             'style_img_len': style_img_len,
             'style_text': style_text,
-            'same_author_img': same_author_img,
-            'same_author_img_len': same_author_img_len,
-            'other_author_img': other_author_img,
-            'other_author_img_len': other_author_img_len,
+            # 'same_author_img': same_author_img,
+            # 'same_author_img_len': same_author_img_len,
+            # 'other_author_img': other_author_img,
+            # 'other_author_img_len': other_author_img_len,
             'multi_author': multi_author,
         }
         return sample
@@ -127,9 +130,14 @@ class Base_dataset(Dataset):
                 msgpack.dump(data, f)
             return img_sizes
 
+    def preload(self):
+        self.imgs_preloaded = [Image.open(img_path).convert('RGB') for img_path in self.imgs]
+        self.imgs_preloaded = [self.transform(img) if self.transform else img for img in self.imgs_preloaded]
+        self.preloaded = True
+
 
 class IAM_dataset(Base_dataset):
-    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines'):
+    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preloaded=True):
         super().__init__(path, nameset, transform)
         self.dataset_type = dataset_type
 
@@ -175,6 +183,9 @@ class IAM_dataset(Base_dataset):
 
         self.imgs_set = set(self.imgs)
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
+
+        if preloaded:
+            self.preload()
 
 
 class Msgpack_dataset(Base_dataset):
@@ -303,10 +314,10 @@ class MergedDataset(Dataset):
         collate_batch['style_imgs'] = pad_images([sample['style_img'] for sample in batch])
         collate_batch['style_imgs_len'] = torch.IntTensor([sample['style_img_len'] for sample in batch])
         collate_batch['style_texts'] = [sample['style_text'] for sample in batch]
-        collate_batch['same_author_imgs'] = pad_images([sample['same_author_img'] for sample in batch])
-        collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
-        collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
-        collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
+        # collate_batch['same_author_imgs'] = pad_images([sample['same_author_img'] for sample in batch])
+        # collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
+        # collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
+        # collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
         collate_batch['multi_authors'] = torch.BoolTensor([sample['multi_author'] for sample in batch])
         return collate_batch
 

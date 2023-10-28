@@ -11,6 +11,7 @@ from einops.layers.torch import Rearrange
 from model.cnn_decoder import FCNDecoder
 from model.ocr import OrigamiNet
 from model.hwt import HWTGenerator
+from util.functional import Clock, MetricCollector
 
 
 def pair(t):
@@ -139,8 +140,8 @@ class TeddyGenerator(nn.Module):
         self.query_style_linear = torch.nn.Linear(query_size, dim)
         self.query_gen_linear = torch.nn.Linear(query_size, dim)
 
-        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True, norm_first=True)
-        transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True, norm_first=True)
+        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
+        transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
 
         encoder_norm = nn.LayerNorm(dim)
         decoder_norm = nn.LayerNorm(dim)
@@ -353,27 +354,29 @@ class Teddy(torch.nn.Module):
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
 
-        # self.generator = TeddyGenerator((img_height, style_max_width), (img_height, patch_width), dim=dim, expansion_factor=expansion_factor,
-        #                                 query_size=self.unifont_embedding.symbols_size, channels=img_channels)
+        self.generator = TeddyGenerator((img_height, style_max_width), (img_height, patch_width), dim=dim, expansion_factor=expansion_factor,
+                                        query_size=self.unifont_embedding.symbols_size, channels=img_channels)
         # self.discriminator = TeddyDiscriminator((img_height, discriminator_width), (img_height, patch_width), dim=dim,
         #                                         expansion_factor=expansion_factor, channels=img_channels)
-        self.generator = HWTGenerator(vocab_size=len(charset) + 1)
+        # self.generator = HWTGenerator(vocab_size=len(charset) + 1)
         self.discriminator = ResnetDiscriminator()
+        self.collector = MetricCollector()
 
     def forward(self, batch):
-        # style_imgs, style_imgs_len, style_text, gen_text, same_author_imgs, same_author_imgs_len, other_author_imgs, other_author_imgs_len
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'])
-        enc_gen_texts, enc_gen_texts_len = self.text_converter.encode(batch['gen_texts'])
+        enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'])
 
-        # style_tgt = self.unifont_embedding(enc_style_text)
-        # gen_tgt = self.unifont_embedding(enc_gen_texts)
+        style_tgt = self.unifont_embedding(enc_style_text)
+        gen_tgt = self.unifont_embedding(enc_gen_text)
 
         #############################
         # Teddy generator
-        # src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
-        # fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
-        fakes = self.generator(batch['style_imgs'], enc_gen_texts)
-        fakes = fakes.unsqueeze(1)
+        with Clock(self.collector, 'time/teddy_generator_style'):
+            src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
+        with Clock(self.collector, 'time/teddy_generator_gen'):
+            fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+        # fakes = self.generator(batch['style_imgs'], enc_gen_text)
+        # fakes = fakes.unsqueeze(1)
 
         #############################
         # Teddy discriminator
@@ -398,18 +401,23 @@ class Teddy(torch.nn.Module):
         # src_2_real    tgt_1_fake  ->  diff    fake
         #############################
 
-        dis_real_pred = self.discriminator(batch['style_imgs'][:, :, :, :64])
-        dis_fake_pred = self.discriminator(fakes[:, 0][:, :, :, :64])
+        with Clock(self.collector, 'time/teddy_discriminator'):
+            dis_real_pred = self.discriminator(batch['style_imgs'][:, :, :, :64])
+            dis_fake_pred = self.discriminator(fakes[:, 0][:, :, :, :64])
 
-        # fakes_rgb = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
-        # real_rgb = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
-        # enc_gen_texts = repeat(enc_gen_texts, 'b w -> (b e) w', e=self.expansion_factor)
-        # enc_gen_texts_len = repeat(enc_gen_texts_len, 'b -> (b e)', e=self.expansion_factor)
+        fakes_rgb = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
+        real_rgb = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
+        enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
+        enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        # freeze(self.ocr)
-        # fake_text_pred = self.ocr(fakes_rgb)
-        # unfreeze(self.ocr)
-        # real_text_pred = self.ocr(real_rgb)
+        with Clock(self.collector, 'time/teddy_ocr_fakes'):
+            ocr_fake_pred = self.ocr(fakes_rgb)
+
+        if 'last_batch' in batch and batch['last_batch']:
+            with Clock(self.collector, 'time/teddy_ocr_real'):
+                ocr_real_pred = self.ocr(real_rgb)
+        else:
+            ocr_real_pred = None
 
         # fakes_exp = rearrange(fakes, 'b e c h w -> (b e) c h w')
         # gen_tgt = repeat(gen_tgt, 'b l d -> (b e) l d', e=self.expansion_factor)
@@ -420,13 +428,13 @@ class Teddy(torch.nn.Module):
             'dis_real_pred': dis_real_pred,
             'dis_fake_pred': dis_fake_pred,
             # 'same_other_pred': same_other_pred,
-            # 'fake_text_pred': fake_text_pred,
-            # 'real_text_pred': real_text_pred,
+            'ocr_fake_pred': ocr_fake_pred,
+            'ocr_real_pred': ocr_real_pred,
             # 'src_style_emb': src_style_emb,
             # 'gen_style_emb': gen_style_emb,
-            # 'enc_gen_texts': enc_gen_texts,
-            # 'enc_gen_texts_len': enc_gen_texts_len,
-            # 'enc_style_text': enc_style_text,
-            # 'enc_style_text_len': enc_style_text_len,
+            'enc_gen_text': enc_gen_text,
+            'enc_gen_text_len': enc_gen_text_len,
+            'enc_style_text': enc_style_text,
+            'enc_style_text_len': enc_style_text_len,
         }
         return results
