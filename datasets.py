@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 import torch
+import html
 from torch.utils.data import Dataset
 import msgpack
 import json
@@ -41,14 +42,18 @@ class ResizeFixedHeight(object):
 
 
 class RandomShrink(object):
-    def __init__(self, min_ratio=0.9, max_ratio=1.5):
+    def __init__(self, min_ratio, max_ratio, max_width=None, snap_to=1):
         self.min_ratio = min_ratio
         self.max_ratio = max_ratio
+        self.max_width = max_width
+        self.sanp_to = snap_to
 
     def __call__(self, img):
         w, h = img.size
-        ratio = random.uniform(self.min_ratio, self.max_ratio)
-        new_w = int(w * ratio)
+        min_width = int(w * self.min_ratio)
+        max_width = min(int(w * self.max_ratio), self.max_width)
+        new_w = random.randint(min_width, max_width)
+        new_w = round(new_w / self.sanp_to) * self.sanp_to
         img = img.resize((new_w, h), Image.BILINEAR)
         return img
 
@@ -156,7 +161,7 @@ class IAM_dataset(Base_dataset):
 
         xml_files = [ET.parse(xml_file) for xml_file in Path(path, 'xmls').rglob('*.xml')]
         tag = 'line' if self.dataset_type == 'lines' else 'word'
-        self.imgs_to_label = {el.attrib['id']: el.attrib['text'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
+        self.imgs_to_label = {el.attrib['id']: html.unescape(el.attrib['text']) for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
         self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
 
         img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
@@ -379,9 +384,9 @@ def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_h
     transform = T.Compose([
         ResizeFixedHeight(resize_height),
         T.Grayscale() if channels == 1 else T.Lambda(lambda x: x),
-        RandomShrink(0.6, 1.6),
+        RandomShrink(0.6, 1.6, max_width=max_width, snap_to=divisible),
         T.ToTensor(),
-        PadNextDivisible(divisible),
+        PadNextDivisible(divisible),  # pad to next divisible of 16 (skip if already divisible)
         T.Normalize((0.5,), (0.5,))
     ])
 
