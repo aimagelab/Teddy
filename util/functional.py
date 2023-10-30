@@ -3,6 +3,8 @@ import torch
 from itertools import pairwise, zip_longest
 from collections import Counter
 import time
+import math
+import numpy as np
 
 
 def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
@@ -22,8 +24,8 @@ def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
 
 
 class TextSampler:
-    def __init__(self, corpus, words_per_line=32, exponent=0.5):
-        self.words_per_line = words_per_line
+    def __init__(self, corpus, max_len, exponent=0.5):
+        self.max_len = max_len
         self.words = [word for line in corpus for word in line.split()]
         unigram_long_text = ''.join(self.words)
         self.unigram_counts = Counter(unigram_long_text)
@@ -35,6 +37,8 @@ class TextSampler:
         self.bigram_counts = {k: len(bigram_long_text) / v ** exponent for k, v in self.bigram_counts.items()}
 
         self.words_weights = [self.eval_word(word) for word in self.words]
+        self.avg_word_width = sum([len(word) for word in self.words]) / len(self.words)
+        self.words_per_line = math.floor(self.max_len / self.avg_word_width)
 
     def eval_word(self, word):
         bigrams = list(pairwise([' ', *word, ' ']))
@@ -44,7 +48,12 @@ class TextSampler:
 
     def sample(self, batch_size):
         random_words = random.choices(self.words, weights=self.words_weights, k=self.words_per_line * batch_size)
-        sampled_lines = [' '.join(chunk) for chunk in grouper(random_words, self.words_per_line)]
+        bins = [[] for _ in range(batch_size)]
+        while random_words:
+            word = random_words.pop()
+            smallest_bin = np.argmin([sum(len(w) for w in bin) for bin in bins])
+            bins[smallest_bin].append(word)
+        sampled_lines = [' '.join(line) for line in bins]
         return sampled_lines
 
 
@@ -97,6 +106,12 @@ class MetricCollector:
 
     def __len__(self):
         return len(self.data)
+
+    def __add__(self, other):
+        assert isinstance(other, MetricCollector)
+        new = MetricCollector()
+        new.data = self.data | other.data
+        return new
 
     def reset(self):
         self.data = {}

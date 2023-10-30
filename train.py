@@ -75,11 +75,11 @@ def train(rank, args):
         optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
 
     ctc_criterion = NoCudnnCTCLoss(reduction='mean', zero_infinity=True).to(device)
-    cycle_criterion = torch.nn.L1Loss(reduction='mean').to(device)
+    style_criterion = torch.nn.TripletMarginLoss()
     tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
 
-    text_generator = TextSampler(dataset.labels, 6)
+    text_generator = TextSampler(dataset.labels, max_len=args.max_width // 16)
 
     if rank == 0 and args.wandb:
         wandb.init(project='teddy', entity='fomo_aiisdh', config=args)
@@ -87,7 +87,7 @@ def train(rank, args):
 
     collector = MetricCollector()
 
-    for epoch in range(10 ** 10):
+    for epoch in range(args.epochs):
         teddy.train()
         teddy_ddp.train()
         epoch_start_time = time.time()
@@ -99,7 +99,8 @@ def train(rank, args):
         for idx, batch in tqdm(enumerate(loader), total=len(loader), disable=rank != 0):
             batch['last_batch'] = idx == len(loader) - 1
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                clock.stop()
+                clock.stop()  # time/data_load
+
                 with Clock(collector, 'time/data_gpu', clock_verbose):
                     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 with Clock(collector, 'time/sample_text', clock_verbose):
@@ -108,35 +109,52 @@ def train(rank, args):
                 with Clock(collector, 'time/forward', clock_verbose):
                     preds = teddy_ddp(batch)
 
-                # Discriminator loss
-                with Clock(collector, 'time/discriminator_loss', clock_verbose):
-                    dis_loss_real, dis_loss_fake = hinge_criterion.discriminator(preds['dis_fake_pred'], preds['dis_real_pred'])
-                    loss_dis = dis_loss_real + dis_loss_fake
-                    collector['loss_dis', 'dis_loss_real', 'dis_loss_fake'] = loss_dis, dis_loss_real, dis_loss_fake
+                if idx % args.dis_critic_num == 0:
+                    # Discriminator loss
+                    with Clock(collector, 'time/discriminator_loss', clock_verbose):
+                        dis_loss_real, dis_loss_fake = hinge_criterion.discriminator(preds['dis_fake_pred'], preds['dis_real_pred'])
+                        loss_dis = (dis_loss_real + dis_loss_fake) * args.weight_dis
+                        collector['loss_dis', 'dis_loss_real', 'dis_loss_fake'] = loss_dis, dis_loss_real, dis_loss_fake
 
                 # Generator loss
                 with Clock(collector, 'time/generator_loss', clock_verbose):
                     gen_loss_fake = hinge_criterion.generator(preds['dis_fake_pred'])
+
                     preds_size = torch.IntTensor([preds['ocr_fake_pred'].size(1)] * args.batch_size).to(device)
                     preds['ocr_fake_pred'] = preds['ocr_fake_pred'].permute(1, 0, 2).log_softmax(2)
                     ocr_loss_fake = ctc_criterion(preds['ocr_fake_pred'], preds['enc_gen_text'], preds_size, preds['enc_gen_text_len'])
-                    loss_gen = gen_loss_fake + ocr_loss_fake
-                    collector['loss_gen', 'gen_loss_fake', 'ocr_loss_fake'] = loss_gen, gen_loss_fake, ocr_loss_fake
 
-                clock.start()
+                    style_loss = style_criterion(preds['fake_style_emb'], preds['real_style_emb'], preds['other_style_emb'])
+
+                    loss_gen = gen_loss_fake * args.weight_gen + ocr_loss_fake * args.weight_ocr + style_loss * args.weight_style
+                    collector['loss_gen', 'gen_loss_fake', 'ocr_loss_fake', 'style_loss'] = loss_gen, gen_loss_fake, ocr_loss_fake, style_loss
+
+                clock.start()  # time/data_load
 
             with Clock(collector, 'time/backward', clock_verbose):
-                optimizer_dis.zero_grad()
+                if idx % args.dis_critic_num == 0:
+                    optimizer_dis.zero_grad()
                 optimizer_gen.zero_grad()
 
-                with GradSwitch(teddy, teddy.discriminator):
-                    scaler.scale(loss_dis).backward(retain_graph=True)
-
+                if idx % args.dis_critic_num == 0:
+                    with GradSwitch(teddy, teddy.discriminator):
+                        scaler.scale(loss_dis).backward(retain_graph=True)
                 with GradSwitch(teddy, teddy.generator):
                     scaler.scale(loss_gen).backward(retain_graph=True)
 
-                scaler.step(optimizer_dis)
+                if args.clip_grad_norm > 0:
+                    if idx % args.dis_critic_num == 0:
+                        scaler.unscale_(optimizer_dis)
+                    scaler.unscale_(optimizer_gen)
+
+                    if idx % args.dis_critic_num == 0:
+                        torch.nn.utils.clip_grad_norm_(teddy.discriminator.parameters(), args.clip_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(teddy.generator.parameters(), args.clip_grad_norm)
+
+                if idx % args.dis_critic_num == 0:
+                    scaler.step(optimizer_dis)
                 scaler.step(optimizer_gen)
+
                 scaler.update()
 
             with Clock(collector, 'time/ocr_step', clock_verbose):
@@ -171,6 +189,7 @@ def train(rank, args):
                 collector['time/epoch_inference'] = time.time() - epoch_start_time
                 collector['ocr_loss_real'] = ocr_loss_real
             collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
+            collector += teddy.collector
             collector.print(f'Epoch {epoch} | ')
 
             if args.wandb:
@@ -182,7 +201,7 @@ def train(rank, args):
                     'reals/style_imgs': [wandb.Image(style_imgs, caption=f"style_imgs")],
                     # 'reals/same_author_imgs': [wandb.Image(same_author_imgs, caption=f"same_author_imgs")],
                     # 'reals/other_author_imgs': [wandb.Image(other_author_imgs, caption=f"other_author_imgs")],
-                } | collector.dict() | teddy.collector.dict())
+                } | collector.dict())
 
         collector.reset()
         teddy.collector.reset()
@@ -221,7 +240,7 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--lr_gen', type=float, default=0.0001)
+    parser.add_argument('--lr_gen', type=float, default=0.00001)
     parser.add_argument('--lr_dis', type=float, default=0.00001)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--log_every', type=int, default=100)
@@ -255,7 +274,7 @@ if __name__ == '__main__':
         # 'washington',
         # 'leopardi',
     ], help="Datasets")
-    parser.add_argument('--max_width', type=int, default=1200, help="Filter images with width > max_width")
+    parser.add_argument('--max_width', type=int, default=600, help="Filter images with width > max_width")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
     parser.add_argument('--resume', type=Path, default=None, help="Resume path")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
@@ -266,14 +285,17 @@ if __name__ == '__main__':
     parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/0ea8_all_datasets/0345000_iter.pth', help="OCR checkpoint b")
     parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/0259_all_datasets/0345000_iter.pth', help="OCR checkpoint c")
     parser.add_argument('--ocr_scheduler', type=str, default='alt', help="OCR scheduler")
-    parser.add_argument('--weight_ctc', type=float, default=1.0, help="CTC loss weight")
-    parser.add_argument('--weight_same_other', type=float, default=6.0, help="Same/other loss weight")
-    parser.add_argument('--weight_real_fake', type=float, default=6.0, help="Real/fake loss weight")
-    parser.add_argument('--weight_cycle', type=float, default=6.0, help="Cycle loss weight")
+    parser.add_argument('--weight_ocr', type=float, default=1.0, help="OCR loss weight")
+    parser.add_argument('--weight_dis', type=float, default=1.0, help="Discriminator loss weight")
+    parser.add_argument('--weight_gen', type=float, default=1.0, help="Generator loss weight")
+    parser.add_argument('--weight_style', type=float, default=1.0, help="Style loss weight")
     parser.add_argument('--weight_mse', type=float, default=0.0, help="MSE loss weight")
     parser.add_argument('--img_channels', type=int, default=1, help="Image channels")
     parser.add_argument('--ddp', action='store_true', help="Use DDP")
     parser.add_argument('--train_ocr', action='store_true', help="Use DDP")
+    parser.add_argument('--dis_critic_num', type=int, default=2, help="Discriminator critic num")
+    parser.add_argument('--clip_grad_norm', type=float, default=-1, help="Clip grad norm")
+    parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
     args = parser.parse_args()
 
     args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
@@ -285,6 +307,7 @@ if __name__ == '__main__':
         assert args.world_size > 1, "You need at least 2 GPUs to train Teddy"
         mp.spawn(cleanup_on_error, args=(train, args), nprocs=args.world_size, join=True)
     else:
+        assert torch.cuda.is_available(), "You need a GPU to train Teddy"
         if args.device == 'auto':
             args.device = f'cuda:{np.argmax(free_mem_percent())}'
         train(0, args)

@@ -338,12 +338,48 @@ class TeddyDiscriminator(torch.nn.Module):
 class ResnetDiscriminator(nn.Module):
     def __init__(self):
         super().__init__()
-        self.resnet = models.resnet18()
+        self.resnet = models.resnet18(num_classes=1)
         self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.resnet.fc = nn.Linear(512, 1)
 
     def forward(self, src):
         return self.resnet(src)
+
+
+class FontSquareEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = models.vgg16(num_classes=10400)
+        checkpoint = torch.hub.load_state_dict_from_url('https://github.com/aimagelab/font_square/releases/download/VGG-16/VGG16_class_10400.pth')
+        self.model.load_state_dict(checkpoint)
+        self.model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.model.classifier = nn.Identity()
+
+    def forward(self, src):
+        return self.model(src)
+
+
+class RandPatchSampler:
+    def __init__(self, patch_width=16, patch_num=4, img_channels=1):
+        self.patch_width = patch_width
+        self.patch_num = patch_num
+        self.img_to_seq = Rearrange('b c h (p pw) -> b p (h pw c)', pw=self.patch_width)
+        self.seq_to_img = Rearrange('b p (h pw c) -> b c h (p pw)', pw=self.patch_width, c=img_channels)
+
+    def __call__(self, img, img_len=None):
+        b, c, h, w = img.shape
+        device = img.device
+        if img_len is None:
+            img_len = torch.tensor([w] * b, device=device)
+        img_len = img_len // self.patch_width
+        img_seq = self.img_to_seq(img)
+        rand_idx = torch.randint(img_len.max() - 1, (img_len.size(0), self.patch_num)).to(device)
+        rand_idx %= img_len.unsqueeze(-1)
+        rand_idx += torch.arange(rand_idx.size(0), device=device).unsqueeze(-1) * img_seq.size(1)
+        rand_idx = rand_idx.flatten()
+        batch2flat = Rearrange('b l d -> (b l) d')
+        flat2batch = Rearrange('(b l) d -> b l d', b=b)
+        img_seq = flat2batch(batch2flat(img_seq)[rand_idx])
+        return self.seq_to_img(img_seq)
 
 
 class Teddy(torch.nn.Module):
@@ -353,13 +389,15 @@ class Teddy(torch.nn.Module):
         self.unifont_embedding = UnifontModule(charset)
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
-
+        self.style_encoder = FontSquareEncoder()
+        freeze(self.style_encoder)
         self.generator = TeddyGenerator((img_height, style_max_width), (img_height, patch_width), dim=dim, expansion_factor=expansion_factor,
                                         query_size=self.unifont_embedding.symbols_size, channels=img_channels)
+        self.discriminator = ResnetDiscriminator()
         # self.discriminator = TeddyDiscriminator((img_height, discriminator_width), (img_height, patch_width), dim=dim,
         #                                         expansion_factor=expansion_factor, channels=img_channels)
-        # self.generator = HWTGenerator(vocab_size=len(charset) + 1)
-        self.discriminator = ResnetDiscriminator()
+
+        self.rand_patch_sampler = RandPatchSampler(patch_width=patch_width, patch_num=8, img_channels=img_channels)
         self.collector = MetricCollector()
 
     def forward(self, batch):
@@ -369,53 +407,36 @@ class Teddy(torch.nn.Module):
         style_tgt = self.unifont_embedding(enc_style_text)
         gen_tgt = self.unifont_embedding(enc_gen_text)
 
-        #############################
-        # Teddy generator
         with Clock(self.collector, 'time/teddy_generator_style'):
             src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
         with Clock(self.collector, 'time/teddy_generator_gen'):
             fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
-        # fakes = self.generator(batch['style_imgs'], enc_gen_text)
-        # fakes = fakes.unsqueeze(1)
 
-        #############################
-        # Teddy discriminator
-
-        # real_fake_pred, same_other_pred = self.discriminator(
-        #     batch['style_imgs'], batch['style_imgs_len'].int(),
-        #     batch['same_author_imgs'], batch['same_author_imgs_len'].int(),
-        #     batch['other_author_imgs'], batch['other_author_imgs_len'].int(),
-        #     fakes[:, 0], batch['gen_texts']  # Take only the first image of each expansion
-        # )
-
-        # source image  target img      author  source
-        # src_1_real    tgt_1_real  ->  same    real
-        # src_2_real    tgt_1_real  ->  diff    real
-        # rf_pred, so_pred = self.discriminator(
-        #     cat_pad(batch['style_imgs'], batch['same_author_imgs']), cat_pad(batch['style_imgs_len'], batch['same_author_imgs_len']),
-        #     cat_pad(batch['other_author_imgs'], batch['same_author_imgs']), cat_pad(batch['other_author_imgs_len'], batch['same_author_imgs_len']),
-        # )
-
-        # source image  target img      author  source
-        # src_1_real    tgt_1_fake  ->  same    fake
-        # src_2_real    tgt_1_fake  ->  diff    fake
-        #############################
-
+        with Clock(self.collector, 'time/teddy_rand_patch_sampler'):
+            real = self.rand_patch_sampler(batch['style_imgs'])
+            fake = self.rand_patch_sampler(fakes[:, 0])
         with Clock(self.collector, 'time/teddy_discriminator'):
-            dis_real_pred = self.discriminator(batch['style_imgs'][:, :, :, :64])
-            dis_fake_pred = self.discriminator(fakes[:, 0][:, :, :, :64])
+            dis_real_pred = self.discriminator(real)
+            dis_fake_pred = self.discriminator(fake)
 
         fakes_rgb = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
         real_rgb = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
+        other_rgb = repeat(batch['other_author_imgs'], 'b 1 h w -> b 3 h w')
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
+
+        with Clock(self.collector, 'time/teddy_style_encoder'):
+            fake_style_emb = self.style_encoder(fakes_rgb)
+            other_style_emb = self.style_encoder(other_rgb)
+            real_style_emb = self.style_encoder(real_rgb)
 
         with Clock(self.collector, 'time/teddy_ocr_fakes'):
             ocr_fake_pred = self.ocr(fakes_rgb)
 
         if 'last_batch' in batch and batch['last_batch']:
-            with Clock(self.collector, 'time/teddy_ocr_real'):
-                ocr_real_pred = self.ocr(real_rgb)
+            with torch.inference_mode():
+                with Clock(self.collector, 'time/teddy_ocr_real'):
+                    ocr_real_pred = self.ocr(real_rgb)
         else:
             ocr_real_pred = None
 
@@ -436,5 +457,8 @@ class Teddy(torch.nn.Module):
             'enc_gen_text_len': enc_gen_text_len,
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
+            'fake_style_emb': fake_style_emb,
+            'other_style_emb': other_style_emb,
+            'real_style_emb': real_style_emb,
         }
         return results

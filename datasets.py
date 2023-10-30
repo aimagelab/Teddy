@@ -7,6 +7,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import msgpack
+import json
 from tqdm import tqdm
 from torchvision import transforms as T
 from torch.nn.utils.rnn import pad_sequence
@@ -36,6 +37,19 @@ class ResizeFixedHeight(object):
         ratio = h / self.height
         new_w = int(w / ratio)
         img = img.resize((new_w, self.height), Image.BILINEAR)
+        return img
+
+
+class RandomShrink(object):
+    def __init__(self, min_ratio=0.9, max_ratio=1.5):
+        self.min_ratio = min_ratio
+        self.max_ratio = max_ratio
+
+    def __call__(self, img):
+        w, h = img.size
+        ratio = random.uniform(self.min_ratio, self.max_ratio)
+        new_w = int(w * ratio)
+        img = img.resize((new_w, h), Image.BILINEAR)
         return img
 
 
@@ -82,21 +96,18 @@ class Base_dataset(Dataset):
         # same_author_img = Image.open(same_author_img_path).convert('RGB')
 
         multi_author = len(other_author_imgs) > 0
-        # other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
-        # other_author_img_path = random.choice(list(other_author_imgs))
-        # other_author_img = Image.open(other_author_img_path).convert('RGB')
+        other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
+        other_author_img_path = random.choice(list(other_author_imgs))
+        other_author_img = Image.open(other_author_img_path).convert('RGB')
 
-        if not self.preloaded:
-            style_img = Image.open(style_img_path).convert('RGB')
-            style_img = self.transform(style_img) if self.transform else style_img
-            # same_author_img = self.transform(same_author_img)
-            # other_author_img = self.transform(other_author_img)
-        else:
-            style_img = self.imgs_preloaded[idx]
+        style_img = Image.open(style_img_path).convert('RGB')
+        style_img = self.transform(style_img) if self.transform else style_img
+        # same_author_img = self.transform(same_author_img)
+        other_author_img = self.transform(other_author_img) if self.transform else other_author_img
 
         style_img_len = style_img.shape[-1]
         # same_author_img_len = same_author_img.shape[-1]
-        # other_author_img_len = other_author_img.shape[-1]
+        other_author_img_len = other_author_img.shape[-1]
 
         sample = {
             'style_img': style_img,
@@ -104,8 +115,8 @@ class Base_dataset(Dataset):
             'style_text': style_text,
             # 'same_author_img': same_author_img,
             # 'same_author_img_len': same_author_img_len,
-            # 'other_author_img': other_author_img,
-            # 'other_author_img_len': other_author_img_len,
+            'other_author_img': other_author_img,
+            'other_author_img_len': other_author_img_len,
             'multi_author': multi_author,
         }
         return sample
@@ -137,7 +148,7 @@ class Base_dataset(Dataset):
 
 
 class IAM_dataset(Base_dataset):
-    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preloaded=True):
+    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preloaded=False):
         super().__init__(path, nameset, transform)
         self.dataset_type = dataset_type
 
@@ -186,6 +197,47 @@ class IAM_dataset(Base_dataset):
 
         if preloaded:
             self.preload()
+
+
+class IAM_custom_dataset(Base_dataset):
+    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preloaded=False, **kwargs):
+        super().__init__(path, nameset, transform)
+
+        self.imgs = list(Path(path, dataset_type).rglob('*.png'))
+
+        with open(Path(path, dataset_type, 'data.json')) as f:
+            self.data = json.load(f)
+
+        self.imgs_to_label = {img_id: value['text'] for img_id, value in self.data.items()}
+        self.imgs_to_author = {img_id: value['auth'] for img_id, value in self.data.items()}
+
+        htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
+        htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
+
+        val_authors_count = round(len(htg_train_authors) * 0.1)
+        val_authors = htg_train_authors[:val_authors_count]
+        train_authors = htg_train_authors[val_authors_count:]
+        assert len(set(train_authors) & set(val_authors)) == 0
+        assert len(set(train_authors) | set(val_authors)) == len(htg_train_authors)
+
+        if nameset == 'train':
+            target_authors = train_authors
+        elif nameset == 'val':
+            target_authors = val_authors
+        else:
+            raise ValueError(f'Unknown nameset {nameset}')
+
+        self.imgs = [img for img in self.imgs if self.imgs_to_author[img.stem] in target_authors]
+        # self.imgs_to_author = {k: v for k, v in self.imgs_to_author.items() if v in target_authors}
+        # self.imgs_to_label = {k: v for k, v in self.imgs_to_label.items() if k in self.imgs_to_author}
+
+        assert all(path.stem in self.imgs_to_label for path in self.imgs), 'Images and labels do not match'
+        assert len(self.imgs) > 0, f'No images found in {path}'
+        self.char_to_idx = get_alphabet(self.imgs_to_label.values())
+        self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
+
+        self.imgs_set = set(self.imgs)
+        self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
 
 
 class Msgpack_dataset(Base_dataset):
@@ -316,8 +368,8 @@ class MergedDataset(Dataset):
         collate_batch['style_texts'] = [sample['style_text'] for sample in batch]
         # collate_batch['same_author_imgs'] = pad_images([sample['same_author_img'] for sample in batch])
         # collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
-        # collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
-        # collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
+        collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
+        collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
         collate_batch['multi_authors'] = torch.BoolTensor([sample['multi_author'] for sample in batch])
         return collate_batch
 
@@ -327,6 +379,7 @@ def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_h
     transform = T.Compose([
         ResizeFixedHeight(resize_height),
         T.Grayscale() if channels == 1 else T.Lambda(lambda x: x),
+        RandomShrink(0.6, 1.6),
         T.ToTensor(),
         PadNextDivisible(divisible),
         T.Normalize((0.5,), (0.5,))
@@ -339,6 +392,12 @@ def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_h
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
+        elif name.lower() == 'iam_lines_sm':
+            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_sm', **kwargs))
+        elif name.lower() == 'iam_lines_xs':
+            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_xs', **kwargs))
+        elif name.lower() == 'iam_lines_xxs':
+            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_xxs', **kwargs))
         elif name.lower() == 'rimes':
             datasets_list.append(Rimes_dataset(path, **kwargs))
         elif name.lower() == 'icfhr16':
