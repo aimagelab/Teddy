@@ -49,4 +49,4 @@ tqdm==4.66.1
 triton==2.1.0
 tzdata==2023.3
 wandb==0.15.12
-Werkzeug==3.0.1
+Werkzeug==3.0.1 

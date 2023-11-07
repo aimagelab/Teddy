@@ -8,5 +8,6 @@
 #SBATCH -J teddy
 
 cd /mnt/beegfs/work/FoMo_AIISDH/vpippi/Teddy || exit
-scontrol update JobID="$SLURM_JOB_ID" name="@{name}_128"
-srun /homes/$(whoami)/.conda/envs/Teddy/bin/python train.py --wandb --lr_gen @{lr} --lr_dis @{lr} --ocr_scheduler @{ocr_sched} --root_path /work/FoMo_AIISDH/datasets
+# scontrol update JobID="$SLURM_JOB_ID" name="teddy_@{name}"
+srun /homes/$(whoami)/.conda/envs/teddy/bin/python train.py --wandb --db_preload --weight_style @{style} --root_path /work/FoMo_AIISDH/datasets \
+    --dis_patch_width @{pwidth} --dis_patch_count @{pcount}

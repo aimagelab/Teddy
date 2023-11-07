@@ -3,7 +3,7 @@ from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-src = Path('/mnt/ssd/datasets/IAM/lines')
+src = Path('/mnt/ssd/datasets/IAM/lines_16')
 
 sizes = [Image.open(img_path).size for img_path in tqdm(list(src.rglob('*.png')))]
 height = 32

@@ -1,3 +1,4 @@
+from typing import Any
 import torch
 import math
 
@@ -10,7 +11,7 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from model.cnn_decoder import FCNDecoder
 from model.ocr import OrigamiNet
-from model.hwt import HWTGenerator
+from model.hwt.model import Discriminator as HWTDiscriminator
 from util.functional import Clock, MetricCollector
 
 
@@ -71,9 +72,8 @@ class CTCLabelConverter(nn.Module):
 
 
 class UnifontModule(nn.Module):
-    def __init__(self, charset, device='cuda'):
+    def __init__(self, charset):
         super(UnifontModule, self).__init__()
-        self.device = device
         self.charset = set(charset)
         self.symbols = self.get_symbols()
         self.symbols_size = self.symbols.size(1)
@@ -183,156 +183,50 @@ class TeddyGenerator(nn.Module):
         return fakes
 
 
-class TeddyDiscriminator(torch.nn.Module):
-    def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=2048, channels=3, dropout=0.1, emb_dropout=0.1, expansion_factor=1):
-        super().__init__()
-        image_height, image_width = pair(image_size)
-        patch_height, patch_width = pair(patch_size)
+# class TeddyDiscriminator(torch.nn.Module):
+#     def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=2048, channels=3, dropout=0.1, emb_dropout=0.1, expansion_factor=1):
+#         super().__init__()
+#         image_height, image_width = pair(image_size)
+#         patch_height, patch_width = pair(patch_size)
 
-        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+#         assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
 
-        patch_dim = channels * patch_height * patch_width
-        self.expansion_factor = expansion_factor
-        self.patch_width = patch_width
+#         patch_dim = channels * patch_height * patch_width
+#         self.expansion_factor = expansion_factor
+#         self.patch_width = patch_width
 
-        self.to_patch_sequence = Rearrange('b c h (p pw) -> b p (h pw c)', pw=self.patch_width)
-        self.to_patch_embedding = nn.Sequential(
-            nn.LayerNorm(patch_dim),
-            nn.Linear(patch_dim, dim),
-            nn.LayerNorm(dim),
-        )
+#         self.to_patch_sequence = Rearrange('b c h (p pw) -> b p (h pw c)', pw=self.patch_width)
+#         self.to_patch_embedding = nn.Sequential(
+#             nn.LayerNorm(patch_dim),
+#             nn.Linear(patch_dim, dim),
+#             nn.LayerNorm(dim),
+#         )
 
-        self.single_num_patches = (image_height // patch_height) * (image_width // patch_width)
-        num_patches = 2 + self.single_num_patches + self.single_num_patches  # cls_tokens + style + tgt
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches, dim))
-        self.cls_tokens = nn.Parameter(torch.randn(1, 2, dim))
-        self.dropout = nn.Dropout(emb_dropout)
+#         self.num_patches = (image_height // patch_height) * (image_width // patch_width)
+#         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, dim))
+#         self.cls_tokens = nn.Parameter(torch.randn(1, 1, dim))
+#         self.dropout = nn.Dropout(emb_dropout)
 
-        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth)
-        self.fc_real_fake = nn.Linear(dim, 1)
-        self.fc_same_other = nn.Linear(dim, 1)
+#         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
+#         self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth)
+#         self.fc_real_fake = nn.Linear(dim, 1)
 
-    def old_forward(self, src_1_real, src_1_real_len, src_2_real, src_2_real_len, tgt_1_real, tgt_1_real_len, tgt_1_fake, fake_texts):
-        # source image  target img      author  source
-        # src_1_real    tgt_1_real  ->  same    real
-        # src_1_real    tgt_1_fake  ->  same    fake
-        # src_2_real    tgt_1_real  ->  diff    real
-        # src_2_real    tgt_1_fake  ->  diff    fake
-        b, *_ = src_1_real.shape
-        device = src_1_real.device
+#     def forward(self, src):
+#         b, *_ = src.shape
+#         src = self.to_patch_sequence(src)
+#         src = self.to_patch_embedding(src)
 
-        # src_1_real = src_1_real.transpose(2, 3).reshape(b, c, src_1_real.size(2) // self.patch_width, -1)[:, :, 0, :].reshape(4, 1, 16, 32).transpose(2, 3)
-        # steps = src_1_real.size(-1) // self.patch_width
-        # fake = torch.cat([torch.ones((1, 32, 16), device=device) * i / steps for i in range(steps)], dim=-1)
-        # src_1_real = torch.stack([fake] * b)
-        src_1_real = self.to_patch_sequence(src_1_real)
-        src_2_real = self.to_patch_sequence(src_2_real)
-        tgt_1_real = self.to_patch_sequence(tgt_1_real)
-        tgt_1_fake = self.to_patch_sequence(tgt_1_fake)
+#         cls_tokens = repeat(self.cls_tokens, '1 c d -> b c d', b=b)
 
-        src_1_real_len = src_1_real_len // self.patch_width
-        src_2_real_len = src_2_real_len // self.patch_width
-        tgt_1_real_len = tgt_1_real_len // self.patch_width
-        tgt_1_fake_len = torch.IntTensor([len(txt) for txt in fake_texts]).to(device)
+#         x = torch.cat((cls_tokens, src), dim=1)
+#         x += self.pos_embedding
+#         x = self.dropout(x)
 
-        rand_idx_src_1_real = torch.randint(src_1_real_len.max() - 1, (src_1_real_len.size(0), self.single_num_patches)).to(device)
-        rand_idx_src_2_real = torch.randint(src_2_real_len.max() - 1, (src_2_real_len.size(0), self.single_num_patches)).to(device)
-        rand_idx_tgt_1_real = torch.randint(tgt_1_real_len.max() - 1, (tgt_1_real_len.size(0), self.single_num_patches)).to(device)
-        rand_idx_tgt_1_fake = torch.randint(tgt_1_fake_len.max() - 1, (tgt_1_fake_len.size(0), self.single_num_patches)).to(device)
+#         x = self.transformer_encoder(x)
 
-        rand_idx_src_1_real %= src_1_real_len.unsqueeze(-1)
-        rand_idx_src_2_real %= src_2_real_len.unsqueeze(-1)
-        rand_idx_tgt_1_real %= tgt_1_real_len.unsqueeze(-1)
-        rand_idx_tgt_1_fake %= tgt_1_fake_len.unsqueeze(-1)
+#         real_fake = self.fc_real_fake(x[:, 0])
 
-        rand_idx_src_1_real += torch.arange(rand_idx_src_1_real.size(0), device=device).unsqueeze(-1) * src_1_real.size(1)
-        rand_idx_src_2_real += torch.arange(rand_idx_src_2_real.size(0), device=device).unsqueeze(-1) * src_2_real.size(1)
-        rand_idx_tgt_1_real += torch.arange(rand_idx_tgt_1_real.size(0), device=device).unsqueeze(-1) * tgt_1_real.size(1)
-        rand_idx_tgt_1_fake += torch.arange(rand_idx_tgt_1_fake.size(0), device=device).unsqueeze(-1) * tgt_1_fake.size(1)
-
-        rand_idx_src_1_real = rand_idx_src_1_real.flatten()
-        rand_idx_src_2_real = rand_idx_src_2_real.flatten()
-        rand_idx_tgt_1_real = rand_idx_tgt_1_real.flatten()
-        rand_idx_tgt_1_fake = rand_idx_tgt_1_fake.flatten()
-
-        batch2flat = Rearrange('b l d -> (b l) d')
-        flat2batch = Rearrange('(b l) d -> b l d', b=b)
-        src_1_real = flat2batch(batch2flat(src_1_real)[rand_idx_src_1_real])
-        src_2_real = flat2batch(batch2flat(src_2_real)[rand_idx_src_2_real])
-        tgt_1_real = flat2batch(batch2flat(tgt_1_real)[rand_idx_tgt_1_real])
-        tgt_1_fake = flat2batch(batch2flat(tgt_1_fake)[rand_idx_tgt_1_fake])
-
-        # save_image(src_1_real.reshape(b, 1, -1, 32).transpose(2, 3), 'src_1_real.png')
-        # save_image(src_2_real.reshape(b, 1, -1, 32).transpose(2, 3), 'src_2_real.png')
-        # save_image(tgt_1_real.reshape(b, 1, -1, 32).transpose(2, 3), 'tgt_1_real.png')
-        # save_image(tgt_1_fake.reshape(b, 1, -1, 32).transpose(2, 3), 'tgt_1_fake.png')
-
-        src_1_real = self.to_patch_embedding(src_1_real)
-        src_2_real = self.to_patch_embedding(src_2_real)
-        tgt_1_real = self.to_patch_embedding(tgt_1_real)
-        tgt_1_fake = self.to_patch_embedding(tgt_1_fake)
-
-        cls_tokens = repeat(self.cls_tokens, '1 c d -> b c d', b=b*4)
-        src = torch.cat((src_1_real, src_1_real, src_2_real, src_2_real), dim=0)
-        tgt = torch.cat((tgt_1_real, tgt_1_fake, tgt_1_real, tgt_1_fake), dim=0)
-
-        x = torch.cat((cls_tokens, src, tgt), dim=1)
-        x += self.pos_embedding
-        x = self.dropout(x)
-
-        x = self.transformer_encoder(x)
-
-        real_fake = self.fc_real_fake(x[:, 0])
-        same_other = self.fc_same_other(x[:, 1])
-
-        return real_fake, same_other
-
-    def forward(self, src, src_len, tgt, tgt_len):
-        b, *_ = src.shape
-        device = src.device
-
-        src = self.to_patch_sequence(src)
-        tgt = self.to_patch_sequence(tgt)
-
-        src_len = src_len // self.patch_width
-        tgt_len = tgt_len // self.patch_width
-
-        src_rand_idx = torch.randint(src_len.max() - 1, (src_len.size(0), self.single_num_patches)).to(device)
-        tgt_rand_idx = torch.randint(tgt_len.max() - 1, (tgt_len.size(0), self.single_num_patches)).to(device)
-
-        src_rand_idx %= src_len.unsqueeze(-1)
-        tgt_rand_idx %= tgt_len.unsqueeze(-1)
-
-        src_rand_idx += torch.arange(src_rand_idx.size(0), device=device).unsqueeze(-1) * src_1_real.size(1)
-        tgt_rand_idx += torch.arange(tgt_rand_idx.size(0), device=device).unsqueeze(-1) * tgt_1_real.size(1)
-
-        src_rand_idx = src_rand_idx.flatten()
-        tgt_rand_idx = tgt_rand_idx.flatten()
-
-        batch2flat = Rearrange('b l d -> (b l) d')
-        flat2batch = Rearrange('(b l) d -> b l d', b=b)
-        src = flat2batch(batch2flat(src)[src_rand_idx])
-        tgt = flat2batch(batch2flat(tgt)[tgt_rand_idx])
-
-        # save_image(src.reshape(b, 1, -1, 32).transpose(2, 3), 'src.png')
-        # save_image(tgt.reshape(b, 1, -1, 32).transpose(2, 3), 'tgt.png')
-
-        src = self.to_patch_embedding(src)
-        tgt = self.to_patch_embedding(tgt)
-
-        cls_tokens = repeat(self.cls_tokens, '1 c d -> b c d', b=b)
-
-        x = torch.cat((cls_tokens, src, tgt), dim=1)
-        x += self.pos_embedding
-        x = self.dropout(x)
-
-        x = self.transformer_encoder(x)
-
-        real_fake = self.fc_real_fake(x[:, 0])
-        same_other = self.fc_same_other(x[:, 1])
-
-        return real_fake, same_other
+#         return real_fake
 
 
 class ResnetDiscriminator(nn.Module):
@@ -371,7 +265,7 @@ class RandPatchSampler:
         if img_len is None:
             img_len = torch.tensor([w] * b, device=device)
         img_len = img_len // self.patch_width
-        img_seq = self.img_to_seq(img)
+        img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.patch_width])
         rand_idx = torch.randint(img_len.max() - 1, (img_len.size(0), self.patch_num)).to(device)
         rand_idx %= img_len.unsqueeze(-1)
         rand_idx += torch.arange(rand_idx.size(0), device=device).unsqueeze(-1) * img_seq.size(1)
@@ -379,45 +273,91 @@ class RandPatchSampler:
         batch2flat = Rearrange('b l d -> (b l) d')
         flat2batch = Rearrange('(b l) d -> b l d', b=b)
         img_seq = flat2batch(batch2flat(img_seq)[rand_idx])
-        return self.seq_to_img(img_seq)
+        # return self.seq_to_img(img_seq)
+        return img_seq.reshape((-1, 1, 32, self.patch_width))
+
+
+class PatchSampler:
+    def __init__(self, patch_width, patch_count, unit=16):
+        assert patch_width % unit == 0, f'Patch width must be divisible by {unit}'
+        self.patch_width = patch_width
+        self.patch_count = patch_count
+        self.unit = unit
+        self.img_to_seq = Rearrange('b c h (p u) -> b p (h u c)', u=unit)
+
+    def __call__(self, img):
+        b, c, h, w = img.shape
+        device = img.device
+        img_len = torch.tensor([w] * b, device=device)
+        img_len = img_len // self.unit
+        img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.unit])
+        rand_idx = torch.randint(img_len.max() - 1 - (self.patch_width // self.unit), (b, self.patch_count)).to(device)
+        rand_idx %= img_len.unsqueeze(-1)
+        rand_idx += torch.arange(b, device=device).unsqueeze(-1) * img_seq.size(1)
+        rand_idx = rand_idx.flatten()
+        batch2flat = Rearrange('b l d -> (b l) d')
+        flat2batch = Rearrange('(b l) d -> b l d', b=b)
+        imgs = []
+        flat_img_seq = batch2flat(img_seq)
+        for i in range(self.patch_width // self.unit):
+            tmp = flat2batch(flat_img_seq[rand_idx + i])
+            tmp = rearrange(tmp, 'b p (h u c) -> b p c h u', h=h, u=self.unit)
+            imgs.append(tmp)
+        # return self.seq_to_img(img_seq)
+        return rearrange(torch.cat(imgs, -1), 'b p c h pw -> (b p) c h pw')
+
+
+class TeddyDiscriminator(torch.nn.Module):
+    def __init__(self, patch_width, charset):
+        super().__init__()
+        self.dis_local = HWTDiscriminator(resolution=patch_width, vocab_size=len(charset) + 1)
+        # self.dis_local = ResnetDiscriminator()
+        self.dis_global = HWTDiscriminator(resolution=patch_width, vocab_size=len(charset) + 1)
 
 
 class Teddy(torch.nn.Module):
-    def __init__(self, charset, dim=512, img_height=32, style_max_width=2512, patch_width=16, expansion_factor=1, discriminator_width=5 * 16, img_channels=3) -> None:
+    def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width,
+                 gen_expansion_factor, dis_patch_width, dis_patch_count, style_patch_width, style_patch_count, **kwargs) -> None:
         super().__init__()
-        self.expansion_factor = expansion_factor
+        self.expansion_factor = gen_expansion_factor
         self.unifont_embedding = UnifontModule(charset)
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
         freeze(self.style_encoder)
-        self.generator = TeddyGenerator((img_height, style_max_width), (img_height, patch_width), dim=dim, expansion_factor=expansion_factor,
+        self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
                                         query_size=self.unifont_embedding.symbols_size, channels=img_channels)
-        self.discriminator = ResnetDiscriminator()
-        # self.discriminator = TeddyDiscriminator((img_height, discriminator_width), (img_height, patch_width), dim=dim,
-        #                                         expansion_factor=expansion_factor, channels=img_channels)
+        # self.discriminator = ResnetDiscriminator()
+        # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width * dis_patch_count), (img_height, gen_patch_width), dim=dis_dim,
+        #                                         expansion_factor=gen_expansion_factor, channels=img_channels)
+        # self.discriminator = TeddyDiscriminator(gen_patch_width, charset)
+        self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1)
 
-        self.rand_patch_sampler = RandPatchSampler(patch_width=patch_width, patch_num=8, img_channels=img_channels)
+        # self.dis_patch_sampler = RandPatchSampler(patch_width=dis_patch_width, patch_num=dis_patch_count, img_channels=img_channels)
+        # self.style_patch_sampler = RandPatchSampler(patch_width=style_patch_width, patch_num=style_patch_count, img_channels=img_channels)
+        self.dis_patch_sampler = PatchSampler(dis_patch_width, dis_patch_count)
+        self.style_patch_sampler = PatchSampler(style_patch_width, style_patch_count)
         self.collector = MetricCollector()
 
     def forward(self, batch):
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'])
         enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'])
 
-        style_tgt = self.unifont_embedding(enc_style_text)
-        gen_tgt = self.unifont_embedding(enc_gen_text)
+        device = self.generator.query_gen_linear.weight.device
 
-        with Clock(self.collector, 'time/teddy_generator_style'):
-            src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
-        with Clock(self.collector, 'time/teddy_generator_gen'):
-            fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+        style_tgt = self.unifont_embedding(enc_style_text).to(device)
+        gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
 
-        with Clock(self.collector, 'time/teddy_rand_patch_sampler'):
-            real = self.rand_patch_sampler(batch['style_imgs'])
-            fake = self.rand_patch_sampler(fakes[:, 0])
-        with Clock(self.collector, 'time/teddy_discriminator'):
-            dis_real_pred = self.discriminator(real)
-            dis_fake_pred = self.discriminator(fake)
+        src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
+        fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+
+        dis_glob_real_pred = self.discriminator(batch['style_imgs'])
+        dis_glob_fake_pred = self.discriminator(fakes[:, 0])
+
+        real = self.dis_patch_sampler(batch['style_imgs'])
+        fake = self.dis_patch_sampler(fakes[:, 0])
+        dis_local_real_pred = self.discriminator(real)
+        dis_local_fake_pred = self.discriminator(fake)
 
         fakes_rgb = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
         real_rgb = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
@@ -425,18 +365,19 @@ class Teddy(torch.nn.Module):
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        with Clock(self.collector, 'time/teddy_style_encoder'):
-            fake_style_emb = self.style_encoder(fakes_rgb)
-            other_style_emb = self.style_encoder(other_rgb)
-            real_style_emb = self.style_encoder(real_rgb)
+        real_samples = self.style_patch_sampler(real_rgb)
+        style_local_real = self.style_encoder(real_samples)
+        fakes_samples = self.style_patch_sampler(fakes_rgb)
+        style_local_fakes = self.style_encoder(fakes_samples)
+        style_glob_fakes = self.style_encoder(fakes_rgb)
+        style_glob_negative = self.style_encoder(other_rgb)
+        style_glob_positive = self.style_encoder(real_rgb)
 
-        with Clock(self.collector, 'time/teddy_ocr_fakes'):
-            ocr_fake_pred = self.ocr(fakes_rgb)
+        ocr_fake_pred = self.ocr(fakes_rgb)
 
         if 'last_batch' in batch and batch['last_batch']:
             with torch.inference_mode():
-                with Clock(self.collector, 'time/teddy_ocr_real'):
-                    ocr_real_pred = self.ocr(real_rgb)
+                ocr_real_pred = self.ocr(real_rgb)
         else:
             ocr_real_pred = None
 
@@ -446,8 +387,10 @@ class Teddy(torch.nn.Module):
 
         results = {
             'fakes': fakes,
-            'dis_real_pred': dis_real_pred,
-            'dis_fake_pred': dis_fake_pred,
+            'dis_glob_real_pred': dis_glob_real_pred,
+            'dis_glob_fake_pred': dis_glob_fake_pred,
+            'dis_local_real_pred': dis_local_real_pred,
+            'dis_local_fake_pred': dis_local_fake_pred,
             # 'same_other_pred': same_other_pred,
             'ocr_fake_pred': ocr_fake_pred,
             'ocr_real_pred': ocr_real_pred,
@@ -457,8 +400,10 @@ class Teddy(torch.nn.Module):
             'enc_gen_text_len': enc_gen_text_len,
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
-            'fake_style_emb': fake_style_emb,
-            'other_style_emb': other_style_emb,
-            'real_style_emb': real_style_emb,
+            'style_local_fakes': style_local_fakes,
+            'style_local_real': style_local_real,
+            'style_glob_fakes': style_glob_fakes,
+            'style_glob_negative': style_glob_negative,
+            'style_glob_positive': style_glob_positive,
         }
         return results

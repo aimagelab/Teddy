@@ -74,12 +74,16 @@ class PadNextDivisible(object):
 class Base_dataset(Dataset):
     def __init__(self, path, nameset='train', transform=T.ToTensor()):
         super().__init__()
-        self.transform = transform
+        if isinstance(transform, tuple):
+            self.pre_transform, self.post_transform = transform
+        else:
+            self.pre_transform, self.post_transform = None, transform
         self.nameset = nameset
         self.path = path
         self.imgs = []
         self.imgs_to_label = {}
         self.imgs_to_author = {}
+        self.imgs_to_idx = {}
         self.char_to_idx = {}
         self.idx_to_char = {}
         self.author_to_imgs = {}
@@ -92,23 +96,30 @@ class Base_dataset(Dataset):
     def __getitem__(self, idx):
         style_img_path = self.imgs[idx]
         style_text = self.imgs_to_label[style_img_path.stem]
+        style_img = Image.open(style_img_path) if not self.preloaded else self.imgs_preloaded[idx]
 
         author = self.imgs_to_author[style_img_path.stem]
         same_author_imgs = self.author_to_imgs[author]
         other_author_imgs = self.imgs_set - same_author_imgs
 
         # same_author_img_path = random.choice(list(same_author_imgs))
-        # same_author_img = Image.open(same_author_img_path).convert('RGB')
+        # same_author_img = Image.open(same_author_img_path)
 
         multi_author = len(other_author_imgs) > 0
         other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
         other_author_img_path = random.choice(list(other_author_imgs))
-        other_author_img = Image.open(other_author_img_path).convert('RGB')
+        other_author_idx = self.imgs_to_idx[other_author_img_path]
+        other_author_img = Image.open(other_author_img_path) if not self.preloaded else self.imgs_preloaded[other_author_idx]
 
-        style_img = Image.open(style_img_path).convert('RGB')
-        style_img = self.transform(style_img) if self.transform else style_img
-        # same_author_img = self.transform(same_author_img)
-        other_author_img = self.transform(other_author_img) if self.transform else other_author_img
+        if self.pre_transform and not self.preloaded:
+            style_img = self.pre_transform(style_img)
+            # same_author_img = self.pre_transform(same_author_img)
+            other_author_img = self.pre_transform(other_author_img)
+
+        if self.post_transform:
+            style_img = self.post_transform(style_img)
+            # same_author_img = self.post_transform(same_author_img)
+            other_author_img = self.post_transform(other_author_img)
 
         style_img_len = style_img.shape[-1]
         # same_author_img_len = same_author_img.shape[-1]
@@ -147,20 +158,21 @@ class Base_dataset(Dataset):
             return img_sizes
 
     def preload(self):
-        self.imgs_preloaded = [Image.open(img_path).convert('RGB') for img_path in self.imgs]
-        self.imgs_preloaded = [self.transform(img) if self.transform else img for img in self.imgs_preloaded]
+        self.imgs_preloaded = [Image.open(img_path) for img_path in self.imgs]
+        if self.pre_transform:
+            self.imgs_preloaded = [self.pre_transform(img) for img in self.imgs_preloaded]
         self.preloaded = True
 
 
 class IAM_dataset(Base_dataset):
-    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preloaded=False):
+    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preload=False):
         super().__init__(path, nameset, transform)
         self.dataset_type = dataset_type
 
         self.imgs = list(Path(path, self.dataset_type).rglob('*.png'))
 
         xml_files = [ET.parse(xml_file) for xml_file in Path(path, 'xmls').rglob('*.xml')]
-        tag = 'line' if self.dataset_type == 'lines' else 'word'
+        tag = 'line' if self.dataset_type.startswith('lines') else 'word'
         self.imgs_to_label = {el.attrib['id']: html.unescape(el.attrib['text']) for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
         self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
 
@@ -197,15 +209,16 @@ class IAM_dataset(Base_dataset):
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
             self.imgs = [img for img in self.imgs if target_width[img.stem] <= max_width]
 
+        self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.imgs_set = set(self.imgs)
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
 
-        if preloaded:
+        if preload:
             self.preload()
 
 
 class IAM_custom_dataset(Base_dataset):
-    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preloaded=False, **kwargs):
+    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preload=False, **kwargs):
         super().__init__(path, nameset, transform)
 
         self.imgs = list(Path(path, dataset_type).rglob('*.png'))
@@ -244,9 +257,12 @@ class IAM_custom_dataset(Base_dataset):
         self.imgs_set = set(self.imgs)
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
 
+        if preload:
+            self.preload()
+
 
 class Msgpack_dataset(Base_dataset):
-    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None):
+    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False):
         super().__init__(path, nameset, transform)
 
         nameset_path = Path(path, f'{nameset}.msgpack')
@@ -278,6 +294,9 @@ class Msgpack_dataset(Base_dataset):
         self.imgs_set = set(self.imgs)
         authors = set(self.imgs_to_author.values())
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in authors}
+
+        if preload:
+            self.preload()
 
 
 class Norhand_dataset(Msgpack_dataset):
@@ -379,24 +398,28 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(datasets, datasets_path, nameset, idx_to_char=None, resize_height=32, divisible=16, max_width=None, channels=3):
+def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, db_max_width=None, img_channels=3, db_preload=True, **kwargs):
     assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
-    transform = T.Compose([
-        ResizeFixedHeight(resize_height),
-        T.Grayscale() if channels == 1 else T.Lambda(lambda x: x),
-        RandomShrink(0.6, 1.6, max_width=max_width, snap_to=divisible),
+    pre_transform = T.Compose([
+        T.Grayscale() if img_channels == 1 else T.Lambda(lambda x: x),
+        ResizeFixedHeight(img_height),
         T.ToTensor(),
-        PadNextDivisible(divisible),  # pad to next divisible of 16 (skip if already divisible)
+        PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
         T.Normalize((0.5,), (0.5,))
+    ])
+    post_transform = T.Compose([
+        # RandomShrink(0.6, 1.6, max_width=db_max_width, snap_to=gen_patch_width),
     ])
 
     datasets_list = []
-    kwargs = {'max_width': max_width, 'max_height': resize_height, 'transform': transform, 'nameset': nameset}
+    kwargs = {'max_width': db_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
+        elif name.lower() == 'iam_lines_16':
+            datasets_list.append(IAM_dataset(path, dataset_type='lines_16', **kwargs))
         elif name.lower() == 'iam_lines_sm':
             datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_sm', **kwargs))
         elif name.lower() == 'iam_lines_xs':

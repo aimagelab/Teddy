@@ -148,6 +148,23 @@ class Clock:
             print(f'Clock: {self.key} {elaps:.4f} sec')
 
 
+def chunk_list(input_list, chunks):
+    chunk_size = len(input_list) // chunks
+    assert chunk_size * chunks == len(input_list), f'Cannot split list of size {len(input_list)} into {chunks} chunks'
+    chunks = [input_list[i:i + chunk_size] for i in range(0, len(input_list), chunk_size)]
+    return chunks
+
+
+class TeddyDataParallel(torch.nn.DataParallel):
+    def scatter(self, inputs, kwargs, device_ids):
+        inputs, module_kwargs = super().scatter(inputs, kwargs, device_ids)
+        for idx, el in enumerate(inputs):
+            for key, val in el[0].items():
+                if isinstance(val, list):
+                    el[0][key] = chunk_list(val, len(device_ids))[idx]
+        return inputs, module_kwargs
+
+
 if __name__ == '__main__':
     collector = MetricCollector()
 
