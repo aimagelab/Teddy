@@ -21,13 +21,13 @@ rm files.zip
 Download the dataset:
 ```bash
 cd /folder/to/datasets
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.zip
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z01
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z02
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z03
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z04
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z05
-wget https://github.com/aimagelab/Teddy/releases/download/files/IAM.z06
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.zip
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z01
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z02
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z03
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z04
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z05
+wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z06
 zip -F IAM.zip --out IAM-single.zip
 unzip IAM-single.zip
 rm IAM.zip IAM.z0* 
