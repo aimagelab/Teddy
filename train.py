@@ -267,7 +267,7 @@ if __name__ == '__main__':
     # Teddy ocr
     parser.add_argument('--ocr_checkpoint_a', type=Path, default='files/f745_all_datasets/0345000_iter.pth', help="OCR checkpoint a")
     parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/0ea8_all_datasets/0345000_iter.pth', help="OCR checkpoint b")
-    parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/0259_all_datasets/0345000_iter.pth', help="OCR checkpoint c")
+    parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/0259_all_datasets/0355000_iter.pth', help="OCR checkpoint c")
     parser.add_argument('--ocr_scheduler', type=str, default='alt', help="OCR scheduler")
 
     # Teddy loss
