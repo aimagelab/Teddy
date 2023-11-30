@@ -30,7 +30,7 @@ wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z05
 wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z06
 zip -F IAM.zip --out IAM-single.zip
 unzip IAM-single.zip
-rm IAM.zip IAM.z0* 
+rm IAM.zip IAM.z0* IAM-single.zip
 ```
 
 ## Training
