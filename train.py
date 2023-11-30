@@ -34,8 +34,15 @@ def internet_connection():
         return False
 
 
-def train(args):
-    device = args.device
+def gather_collectors(collector):
+    metrics = collector.pytorch_tensor()
+    dist.reduce(metrics, 0, op=dist.ReduceOp.SUM)
+    return collector.load_pytorch_tensor(metrics)
+
+
+def train(rank, args):
+    device = torch.device(rank)
+    setup(rank, args.world_size)
 
     dataset = dataset_factory('train', **args.__dict__)
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
@@ -47,14 +54,12 @@ def train(args):
     assert ocr_checkpoint_a['charset'] == ocr_checkpoint_b['charset'], "OCR checkpoints must have the same charset"
 
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
-    teddy_dp = TeddyDataParallel(teddy) if args.dp and torch.cuda.device_count() > 1 else teddy
+    teddy_ddp = DDP(teddy, device_ids=[rank], find_unused_parameters=True)
 
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
-    # scheduler_dis = torch.optim.lr_scheduler.ExponentialLR(optimizer_dis, gamma=0.9999)
     scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
 
     optimizer_gen = torch.optim.AdamW(teddy.generator.parameters(), lr=args.lr_gen)
-    # scheduler_gen = torch.optim.lr_scheduler.ExponentialLR(optimizer_gen, gamma=0.9999)
     scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
 
     match args.ocr_scheduler:
@@ -84,7 +89,7 @@ def train(args):
     tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
 
-    text_generator = TextSampler(dataset.labels, max_len=args.db_max_width // 16)
+    text_generator = TextSampler(dataset.labels, max_len=args.gen_text_line_len)
 
     if args.wandb:
         name = f"{args.lr_gen}_{args.weight_style}_{args.dis_critic_num}"
@@ -101,7 +106,7 @@ def train(args):
         clock = Clock(collector, 'time/data_load', clock_verbose)
         clock.start()
 
-        for idx, batch in tqdm(enumerate(loader), total=len(loader)):
+        for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
             batch['last_batch'] = idx == len(loader) - 1
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 clock.stop()  # time/data_load
@@ -109,7 +114,7 @@ def train(args):
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 batch['gen_texts'] = text_generator.sample(len(batch['style_imgs']))
 
-                preds = teddy_dp(batch)
+                preds = teddy_ddp(batch)
 
                 # Discriminator loss
                 if idx % args.dis_critic_num == 0:
@@ -157,7 +162,6 @@ def train(args):
             if idx % args.dis_critic_num == 0:
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
-
             scaler.update()
 
             optimizer_ocr.step()
@@ -166,7 +170,7 @@ def train(args):
         collector['time/iter_train'] = (time.time() - epoch_start_time) / len(dataset)
 
         epoch_start_time = time.time()
-        if args.wandb:
+        if args.wandb and rank == 0:
             with torch.inference_mode():
                 fakes = rearrange(preds['fakes'], 'b e c h w -> (b e) c h w')
                 img_grid = make_grid(fakes, nrow=1, normalize=True, value_range=(-1, 1))
@@ -191,9 +195,10 @@ def train(args):
             collector['ocr_loss_real'] = ocr_loss_real
         collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
         collector += teddy.collector
+        collector = gather_collectors(collector)
         collector.print(f'Epoch {epoch} | ')
 
-        if args.wandb:
+        if args.wandb and rank == 0:
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha,
                 'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
@@ -212,8 +217,6 @@ def train(args):
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-
-    # initialize the process group
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
 
@@ -247,18 +250,18 @@ if __name__ == '__main__':
     parser.add_argument('--resume', type=Path, default=None, help="Resume path")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
+    parser.add_argument('--world_size', type=int, default=1, help="World size")
 
     # datasets
-    parser.add_argument('--root_path', type=str, default='/mnt/ssd/datasets', help="Root path")
+    parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
     parser.add_argument('--datasets_path', type=str, nargs='+', default=['IAM',], help="Datasets path")
-    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines',], help="Datasets")
+    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_sm',], help="Datasets")
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
-    parser.add_argument('--db_max_width', type=int, default=800, help="Filter images with width > max_width")
 
     # Teddy general
     parser.add_argument('--img_channels', type=int, default=1, help="Image channels")
     parser.add_argument('--img_height', type=int, default=32, help="Image height")
-    parser.add_argument('--dp', action='store_true', help="Use DP")
+    parser.add_argument('--ddp', action='store_true', help="Use DDP")
     parser.add_argument('--clip_grad_norm', type=float, default=-1, help="Clip grad norm")
 
     # Teddy ocr
@@ -276,9 +279,10 @@ if __name__ == '__main__':
 
     # Teddy generator
     parser.add_argument('--gen_dim', type=int, default=512, help="Model dimension")
-    parser.add_argument('--gen_max_width', type=int, default=2512, help="Max width")
+    parser.add_argument('--gen_max_width', type=int, default=608, help="Max width")
     parser.add_argument('--gen_patch_width', type=int, default=16, help="Patch width")
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
+    parser.add_argument('--gen_text_line_len', type=int, default=20, help="Text line len")
 
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")
@@ -301,4 +305,8 @@ if __name__ == '__main__':
     assert torch.cuda.is_available(), "You need a GPU to train Teddy"
     if args.device == 'auto':
         args.device = f'cuda:{np.argmax(free_mem_percent())}'
-    train(args)
+
+    if args.ddp:
+        mp.spawn(cleanup_on_error, args=(train, args), nprocs=args.world_size, join=True)
+    else:
+        train(args.device, args)

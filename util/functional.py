@@ -98,8 +98,8 @@ class MetricCollector:
             value = value.item()
         if key not in self.data:
             self.data[key] = {'tot': 0.0, 'count': 0}
-        self.data[key]['tot'] = value
-        self.data[key]['count'] = 1
+        self.data[key]['tot'] += value
+        self.data[key]['count'] += 1
 
     def __contains__(self, item):
         return item in self.data
@@ -122,6 +122,15 @@ class MetricCollector:
 
     def dict(self):
         return {k: self[k] for k in self.data.keys()}
+
+    def pytorch_tensor(self):
+        return torch.tensor([[self.data[k]['tot'], self.data[k]['count']] for k in sorted(self.data.keys())])
+
+    def load_pytorch_tensor(self, tensor):
+        assert isinstance(tensor, torch.Tensor)
+        assert tensor.shape[0] == len(self.data) and tensor.shape[1] == 2
+        self.data = {k: {'tot': tot, 'count': count} for k, (tot, count) in zip(sorted(self.data.keys()), tensor.tolist())}
+        return self
 
 
 class Clock:

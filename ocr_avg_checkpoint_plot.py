@@ -1,7 +1,7 @@
 import torch
 from model.ocr import OrigamiNet
 from model.teddy import CTCLabelConverter
-from datasets import dataset_factory
+from datasets.datasets import dataset_factory
 from util import CheckpointScheduler
 from tqdm import tqdm
 from matplotlib import pyplot as plt

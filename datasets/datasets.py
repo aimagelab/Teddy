@@ -10,10 +10,10 @@ from torch.utils.data import Dataset
 import msgpack
 import json
 from tqdm import tqdm
-from torchvision import transforms as T
 from torch.nn.utils.rnn import pad_sequence
 from torch.nn.functional import pad
 from einops import rearrange
+from datasets import transforms as T
 
 
 def get_alphabet(labels):
@@ -27,48 +27,6 @@ def get_alphabet(labels):
 def pad_images(images, padding_value=1):
     images = [rearrange(img, 'c h w -> w c h') for img in images]
     return rearrange(pad_sequence(images, padding_value=padding_value), 'w b c h -> b c h w')
-
-
-class ResizeFixedHeight(object):
-    def __init__(self, height):
-        self.height = height
-
-    def __call__(self, img):
-        w, h = img.size
-        ratio = h / self.height
-        new_w = int(w / ratio)
-        img = img.resize((new_w, self.height), Image.BILINEAR)
-        return img
-
-
-class RandomShrink(object):
-    def __init__(self, min_ratio, max_ratio, max_width=None, snap_to=1):
-        self.min_ratio = min_ratio
-        self.max_ratio = max_ratio
-        self.max_width = max_width
-        self.sanp_to = snap_to
-
-    def __call__(self, img):
-        w, h = img.size
-        min_width = int(w * self.min_ratio)
-        max_width = min(int(w * self.max_ratio), self.max_width)
-        new_w = random.randint(min_width, max_width)
-        new_w = round(new_w / self.sanp_to) * self.sanp_to
-        img = img.resize((new_w, h), Image.BILINEAR)
-        return img
-
-
-class PadNextDivisible(object):
-    def __init__(self, divisible, padding_value=1):
-        self.divisible = divisible
-        self.padding_value = padding_value
-
-    def __call__(self, img):
-        width = img.shape[-1]
-        if width % self.divisible == 0:
-            return img
-        pad_width = self.divisible - width % self.divisible
-        return pad(img, (0, pad_width), value=self.padding_value)
 
 
 class Base_dataset(Dataset):
@@ -102,35 +60,28 @@ class Base_dataset(Dataset):
         same_author_imgs = self.author_to_imgs[author]
         other_author_imgs = self.imgs_set - same_author_imgs
 
-        # same_author_img_path = random.choice(list(same_author_imgs))
-        # same_author_img = Image.open(same_author_img_path)
-
         multi_author = len(other_author_imgs) > 0
         other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
         other_author_img_path = random.choice(list(other_author_imgs))
         other_author_idx = self.imgs_to_idx[other_author_img_path]
+        other_author_text = self.imgs_to_label[other_author_img_path.stem]
         other_author_img = Image.open(other_author_img_path) if not self.preloaded else self.imgs_preloaded[other_author_idx]
 
         if self.pre_transform and not self.preloaded:
-            style_img = self.pre_transform(style_img)
-            # same_author_img = self.pre_transform(same_author_img)
-            other_author_img = self.pre_transform(other_author_img)
+            style_img = self.pre_transform((style_img, style_text))[0]
+            other_author_img = self.pre_transform((other_author_img, other_author_text))[0]
 
         if self.post_transform:
-            style_img = self.post_transform(style_img)
-            # same_author_img = self.post_transform(same_author_img)
-            other_author_img = self.post_transform(other_author_img)
+            style_img = self.post_transform((style_img, style_text))[0]
+            other_author_img = self.post_transform((other_author_img, other_author_text))[0]
 
         style_img_len = style_img.shape[-1]
-        # same_author_img_len = same_author_img.shape[-1]
         other_author_img_len = other_author_img.shape[-1]
 
         sample = {
             'style_img': style_img,
             'style_img_len': style_img_len,
             'style_text': style_text,
-            # 'same_author_img': same_author_img,
-            # 'same_author_img_len': same_author_img_len,
             'other_author_img': other_author_img,
             'other_author_img_len': other_author_img_len,
             'multi_author': multi_author,
@@ -158,9 +109,9 @@ class Base_dataset(Dataset):
             return img_sizes
 
     def preload(self):
-        self.imgs_preloaded = [Image.open(img_path) for img_path in self.imgs]
+        self.imgs_preloaded = [(Image.open(img_path), self.imgs_to_label[img_path.stem]) for img_path in self.imgs]
         if self.pre_transform:
-            self.imgs_preloaded = [self.pre_transform(img) for img in self.imgs_preloaded]
+            self.imgs_preloaded = [self.pre_transform((img, lbl))[0] for img, lbl in self.imgs_preloaded]
         self.preloaded = True
 
 
@@ -255,6 +206,7 @@ class IAM_custom_dataset(Base_dataset):
         self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
 
         self.imgs_set = set(self.imgs)
+        self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
 
         if preload:
@@ -398,21 +350,25 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, db_max_width=None, img_channels=3, db_preload=True, **kwargs):
+def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None, img_channels=3, db_preload=True, **kwargs):
     assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
     pre_transform = T.Compose([
-        T.Grayscale() if img_channels == 1 else T.Lambda(lambda x: x),
-        ResizeFixedHeight(img_height),
+        T.Convert(img_channels),
+        T.ResizeFixedHeight(img_height),
+        T.FixedCharWidth(gen_patch_width),
         T.ToTensor(),
-        PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
+        T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
+        # PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
         T.Normalize((0.5,), (0.5,))
     ])
     post_transform = T.Compose([
-        # RandomShrink(0.6, 1.6, max_width=db_max_width, snap_to=gen_patch_width),
+        T.ToPILImage(),
+        T.RandomShrink(0.6, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
+        T.ToTensor(),
     ])
 
     datasets_list = []
-    kwargs = {'max_width': db_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
+    kwargs = {'max_width': gen_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))

@@ -32,19 +32,18 @@ def unfreeze(model):
 class CTCLabelConverter(nn.Module):
     def __init__(self, charset):
         super(CTCLabelConverter, self).__init__()
-        self.device = 'cpu'
         self.charset = sorted(set(charset))
 
         # NOTE: 0 is reserved for 'blank' token required by CTCLoss
         self.dict = {char: i + 1 for i, char in enumerate(self.charset)}
         self.charset.insert(0, '[blank]')  # dummy '[blank]' token for CTCLoss (index 0)
 
-    def encode(self, labels):
+    def encode(self, labels, device='cpu'):
         assert set(''.join(labels)) < set(self.charset), f'The following character are not in charset {set("".join(labels)) - set(self.charset)}'
         length = torch.LongTensor([len(lbl) for lbl in labels])
         labels = [torch.LongTensor([self.dict[char] for char in lbl]) for lbl in labels]
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=0)
-        return labels.to(self.device), length.to(self.device)
+        return labels.to(device), length.to(device)
 
     def decode(self, labels, length):
         texts = []
@@ -64,11 +63,6 @@ class CTCLabelConverter(nn.Module):
         preds_size = preds.size(1) - (np.flip(preds_index, 1) > 0).argmax(-1)
         preds_size = np.where(preds_size < preds.size(1), preds_size, 0)
         return self.decode(preds_index, preds_size)
-
-    def _apply(self, fn):
-        super(CTCLabelConverter, self)._apply(fn)
-        self.device = fn(torch.empty(1)).device
-        return self
 
 
 class UnifontModule(nn.Module):
@@ -291,7 +285,7 @@ class PatchSampler:
         img_len = torch.tensor([w] * b, device=device)
         img_len = img_len // self.unit
         img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.unit])
-        rand_idx = torch.randint(img_len.max() - 1 - (self.patch_width // self.unit), (b, self.patch_count)).to(device)
+        rand_idx = torch.randint(img_len.max() + 1 - (self.patch_width // self.unit), (b, self.patch_count)).to(device)
         rand_idx %= img_len.unsqueeze(-1)
         rand_idx += torch.arange(b, device=device).unsqueeze(-1) * img_seq.size(1)
         rand_idx = rand_idx.flatten()
@@ -340,10 +334,10 @@ class Teddy(torch.nn.Module):
         self.collector = MetricCollector()
 
     def forward(self, batch):
-        enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'])
-        enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'])
+        device = batch['style_imgs'].device
 
-        device = self.generator.query_gen_linear.weight.device
+        enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'], device)
+        enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'], device)
 
         style_tgt = self.unifont_embedding(enc_style_text).to(device)
         gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
