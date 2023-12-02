@@ -182,3 +182,22 @@ if __name__ == '__main__':
     collector['loss'] = 3
 
     print(collector['loss'])
+
+
+class ChunkLoader:
+    def __init__(self, loader, chunk_size):
+        assert isinstance(loader, torch.utils.data.DataLoader)
+        self.loader = loader
+        self.loader_iter = iter(loader)
+        self.chunk_size = chunk_size
+
+    def __iter__(self):
+        for _ in range(self.chunk_size):
+            try:
+                yield next(self.loader_iter)
+            except StopIteration:
+                self.loader_iter = iter(self.loader)
+                yield next(self.loader_iter)
+
+    def __len__(self):
+        return self.chunk_size

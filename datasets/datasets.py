@@ -357,14 +357,14 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
         T.ResizeFixedHeight(img_height),
         T.FixedCharWidth(gen_patch_width),
         T.ToTensor(),
-        T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
         # PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
-        T.Normalize((0.5,), (0.5,))
     ])
     post_transform = T.Compose([
         T.ToPILImage(),
-        T.RandomShrink(0.6, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
+        T.RandomShrink(0.8, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
         T.ToTensor(),
+        T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
+        T.Normalize((0.5,), (0.5,))
     ])
 
     datasets_list = []

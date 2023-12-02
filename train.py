@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import GradScaler
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss
-from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, TeddyDataParallel
+from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, TeddyDataParallel, ChunkLoader
 from torchvision.utils import make_grid
 from einops import rearrange, repeat
 import wandb
@@ -42,11 +42,14 @@ def gather_collectors(collector):
 
 def train(rank, args):
     device = torch.device(rank)
-    setup(rank, args.world_size)
+
+    if args.ddp:
+        setup(rank, args.world_size)
 
     dataset = dataset_factory('train', **args.__dict__)
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=True)
+    loader = ChunkLoader(loader, args.epochs_size)
 
     ocr_checkpoint_a = torch.load(args.ocr_checkpoint_a, map_location=device)
     ocr_checkpoint_b = torch.load(args.ocr_checkpoint_b, map_location=device)
@@ -54,7 +57,7 @@ def train(rank, args):
     assert ocr_checkpoint_a['charset'] == ocr_checkpoint_b['charset'], "OCR checkpoints must have the same charset"
 
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
-    teddy_ddp = DDP(teddy, device_ids=[rank], find_unused_parameters=True)
+    teddy_ddp = DDP(teddy, device_ids=[rank], find_unused_parameters=True) if args.ddp else teddy
 
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
     scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
@@ -91,10 +94,10 @@ def train(rank, args):
 
     text_generator = TextSampler(dataset.labels, max_len=args.gen_text_line_len)
 
-    if args.wandb:
+    if args.wandb and rank == 0:
         name = f"{args.lr_gen}_{args.weight_style}_{args.dis_critic_num}"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
-        wandb.watch(teddy)
+        # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
 
     collector = MetricCollector()
 
@@ -195,10 +198,11 @@ def train(rank, args):
             collector['ocr_loss_real'] = ocr_loss_real
         collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
         collector += teddy.collector
-        collector = gather_collectors(collector)
-        collector.print(f'Epoch {epoch} | ')
+        # if args.ddp:
+        #     collector = gather_collectors(collector)
 
         if args.wandb and rank == 0:
+            collector.print(f'Epoch {epoch} | ')
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha,
                 'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
@@ -216,8 +220,8 @@ def train(rank, args):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    os.environ['MASTER_PORT'] = '12356'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
 def cleanup():
@@ -246,10 +250,11 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
-    parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
+    parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
     parser.add_argument('--resume', type=Path, default=None, help="Resume path")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
+    parser.add_argument('--epochs_size', type=int, default=1000, help="Epochs size")
     parser.add_argument('--world_size', type=int, default=1, help="World size")
 
     # datasets
@@ -309,4 +314,4 @@ if __name__ == '__main__':
     if args.ddp:
         mp.spawn(cleanup_on_error, args=(train, args), nprocs=args.world_size, join=True)
     else:
-        train(args.device, args)
+        train(0, args)

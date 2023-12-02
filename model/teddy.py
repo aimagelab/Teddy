@@ -154,6 +154,7 @@ class TeddyGenerator(nn.Module):
 
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         x = torch.cat((style_tokens, x), dim=1)
+        assert x.shape[1] <= self.pos_embedding.shape[1], f'Number of style tokens {x.shape[1]} > positional embeddings {self.pos_embedding.shape[1]}. {style_imgs.shape=}'
         x += self.pos_embedding[:, :n + self.style_tokens.size(1)]
 
         x = self.transformer_encoder(x)
@@ -281,9 +282,10 @@ class PatchSampler:
 
     def __call__(self, img):
         b, c, h, w = img.shape
+        assert w >= self.patch_width, f'Image with shape {img.shape} is smaller than patch width {self.patch_width}'
         device = img.device
         img_len = torch.tensor([w] * b, device=device)
-        img_len = img_len // self.unit
+        img_len = (img_len / self.unit).ceil().long()
         img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.unit])
         rand_idx = torch.randint(img_len.max() + 1 - (self.patch_width // self.unit), (b, self.patch_count)).to(device)
         rand_idx %= img_len.unsqueeze(-1)

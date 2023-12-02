@@ -1,6 +1,6 @@
 from PIL import Image
 import random
-import torch
+import math
 from torchvision.transforms import functional as F
 from torchvision import transforms as T
 from torchvision.transforms import Compose
@@ -21,6 +21,11 @@ class ResizeFixedHeight(object):
 
 class RandomShrink(object):
     def __init__(self, min_ratio, max_ratio, min_width=0, max_width=10 ** 9, snap_to=1):
+        assert min_ratio <= max_ratio
+        assert min_width <= max_width
+        assert snap_to > 0
+        assert min_width % snap_to == 0
+        assert max_width % snap_to == 0
         self.min_ratio = min_ratio
         self.max_ratio = max_ratio
         self.min_width = min_width
@@ -30,11 +35,14 @@ class RandomShrink(object):
     def __call__(self, sample):
         img, lbl = sample
         w, h = img.size
-        min_width = max(int(w * self.min_ratio), self.min_width)
-        max_width = min(int(w * self.max_ratio), self.max_width)
+        min_width = min(max(int(w * self.min_ratio), self.min_width), self.max_width)
+        max_width = max(min(int(w * self.max_ratio), self.max_width), self.min_width)
+        assert min_width <= max_width, f'{min_width=} > {max_width=}'
         new_w = random.randint(min_width, max_width)
-        new_w = round(new_w / self.sanp_to) * self.sanp_to
+        new_w = math.ceil(new_w / self.sanp_to) * self.sanp_to
         img = img.resize((new_w, h), Image.BILINEAR)
+        assert img.size[0] >= self.min_width, f'{img.size[0]} < {self.min_width}'
+        assert img.size[0] <= self.max_width, f'{img.size[0]} > {self.max_width}'
         return img, lbl
 
 
