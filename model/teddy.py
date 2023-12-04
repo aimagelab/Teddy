@@ -282,7 +282,11 @@ class PatchSampler:
 
     def __call__(self, img):
         b, c, h, w = img.shape
-        assert w >= self.patch_width, f'Image with shape {img.shape} is smaller than patch width {self.patch_width}'
+        if w < self.patch_width:
+            pad_width = self.patch_width - w
+            img = torch.nn.functional.pad(img, (0, pad_width), value=1)
+            b, c, h, w = img.shape
+
         device = img.device
         img_len = torch.tensor([w] * b, device=device)
         img_len = (img_len / self.unit).ceil().long()
@@ -361,8 +365,8 @@ class Teddy(torch.nn.Module):
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        real_samples = self.style_patch_sampler(real_rgb)
-        style_local_real = self.style_encoder(real_samples)
+        # real_samples = self.style_patch_sampler(real_rgb)
+        # style_local_real = self.style_encoder(real_samples)
         fakes_samples = self.style_patch_sampler(fakes_rgb)
         style_local_fakes = self.style_encoder(fakes_samples)
         style_glob_fakes = self.style_encoder(fakes_rgb)
@@ -397,7 +401,7 @@ class Teddy(torch.nn.Module):
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
             'style_local_fakes': style_local_fakes,
-            'style_local_real': style_local_real,
+            # 'style_local_real': style_local_real,
             'style_glob_fakes': style_glob_fakes,
             'style_glob_negative': style_glob_negative,
             'style_glob_positive': style_glob_positive,

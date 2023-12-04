@@ -20,6 +20,7 @@ from tqdm import tqdm
 import time
 from torch.profiler import tensorboard_trace_handler
 import requests
+import uuid
 
 
 def free_mem_percent():
@@ -92,10 +93,11 @@ def train(rank, args):
     tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
 
-    text_generator = TextSampler(dataset.labels, max_len=args.gen_text_line_len)
+    text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
+    text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
 
     if args.wandb and rank == 0:
-        name = f"{args.lr_gen}_{args.weight_style}_{args.dis_critic_num}"
+        name = f"{args.run_id}_{args.lr_gen}_{args.weight_style}_{args.dis_critic_num}"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
         # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
 
@@ -210,6 +212,19 @@ def train(rank, args):
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
             } | collector.dict())
 
+        if rank == 0 and epoch % 10 == 0:
+            dst = Path(args.checkpoint_path, args.run_id, f'{epoch:06d}_epochs.pth')
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                'model': teddy.state_dict(),
+                'optimizer_dis': optimizer_dis.state_dict(),
+                'optimizer_gen': optimizer_gen.state_dict(),
+                'scheduler_dis': scheduler_dis.state_dict(),
+                'scheduler_gen': scheduler_gen.state_dict(),
+                # 'optimizer_ocr': optimizer_ocr.state_dict(),
+                'args': vars(args),
+            }, dst)
+
         collector.reset()
         teddy.collector.reset()
 
@@ -250,12 +265,14 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
-    parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
+    parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
     parser.add_argument('--resume', type=Path, default=None, help="Resume path")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
     parser.add_argument('--epochs_size', type=int, default=1000, help="Epochs size")
     parser.add_argument('--world_size', type=int, default=1, help="World size")
+    parser.add_argument('--checkpoint_path', type=str, default='files/checkpoints', help="Checkpoint path")
+    parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")
 
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
@@ -287,7 +304,7 @@ if __name__ == '__main__':
     parser.add_argument('--gen_max_width', type=int, default=608, help="Max width")
     parser.add_argument('--gen_patch_width', type=int, default=16, help="Patch width")
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
-    parser.add_argument('--gen_text_line_len', type=int, default=20, help="Text line len")
+    parser.add_argument('--gen_text_line_len', type=int, default=32, help="Text line len")
 
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")

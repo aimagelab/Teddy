@@ -24,7 +24,8 @@ def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
 
 
 class TextSampler:
-    def __init__(self, corpus, max_len, exponent=0.5):
+    def __init__(self, corpus, min_len, max_len, exponent=0.5):
+        self.min_len = min_len
         self.max_len = max_len
         self.words = [word for line in corpus for word in line.split()]
         unigram_long_text = ''.join(self.words)
@@ -54,7 +55,15 @@ class TextSampler:
             smallest_bin = np.argmin([sum(len(w) for w in bin) for bin in bins])
             bins[smallest_bin].append(word)
         sampled_lines = [' '.join(line) for line in bins]
-        return sampled_lines
+
+        clamped_lines = []
+        for line in sampled_lines:
+            if len(line) < self.min_len:
+                line = line + (' ' * (self.min_len - len(line)))
+            if len(line) > self.max_len:
+                line = line[:self.max_len]
+            clamped_lines.append(line)
+        return clamped_lines
 
 
 class GradSwitch:

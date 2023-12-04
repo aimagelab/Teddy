@@ -5,3 +5,4 @@ test_sampled_text
 *.png
 wandb
 profiler
+files/checkpoints
