@@ -6,3 +6,4 @@ test_sampled_text
 wandb
 profiler
 files/checkpoints
+files/datasets
