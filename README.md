@@ -12,7 +12,6 @@ pip install -r requirements.txt
 
 Download the files necessary to run the code:
 ```bash
-cd Teddy
 wget https://github.com/aimagelab/Teddy/releases/download/files/files.zip
 unzip files.zip
 rm files.zip
@@ -21,16 +20,9 @@ rm files.zip
 Download the dataset:
 ```bash
 cd /folder/to/datasets
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.zip
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z01
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z02
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z03
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z04
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z05
-wget https://github.com/aimagelab/Teddy/releases/download/datasets/IAM.z06
-zip -F IAM.zip --out IAM-single.zip
-unzip IAM-single.zip
-rm IAM.zip IAM.z0* IAM-single.zip
+wget -i https://github.com/aimagelab/Teddy/releases/download/datasets/urls.txt
+zip -F IAM.zip --out IAM-single.zip && unzip IAM-single.zip
+rm IAM.zip IAM.z0* IAM-single.zip urls.txt
 ```
 
 ## Training

@@ -6,6 +6,7 @@ import pickle
 from torch import nn
 import numpy as np
 from torchvision import models
+from torchvision.utils import save_image
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
@@ -238,8 +239,8 @@ class FontSquareEncoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = models.vgg16(num_classes=10400)
-        checkpoint = torch.hub.load_state_dict_from_url('https://github.com/aimagelab/font_square/releases/download/VGG-16/VGG16_class_10400.pth')
-        self.model.load_state_dict(checkpoint)
+        # checkpoint = torch.hub.load_state_dict_from_url('https://github.com/aimagelab/font_square/releases/download/VGG-16/VGG16_class_10400.pth')
+        # self.model.load_state_dict(checkpoint)
         self.model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.model.classifier = nn.Identity()
 

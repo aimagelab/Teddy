@@ -78,15 +78,16 @@ def train(rank, args):
 
     scaler = GradScaler()
 
-    if args.resume is not None:
-        assert args.resume.exists(), f"Resume path {args.resume} doesn't exist"
-        checkpoint = torch.load(args.resume)
+    if args.resume and args.checkpoint_path.exists() and len(list(args.checkpoint_path.glob('*_epochs.pth'))) > 0:
+        last_checkpoint = sorted(args.checkpoint_path.glob('*_epochs.pth'))[-1]
+        checkpoint = torch.load(last_checkpoint)
         teddy.load_state_dict(checkpoint['model'])
         optimizer_dis.load_state_dict(checkpoint['optimizer_dis'])
         optimizer_gen.load_state_dict(checkpoint['optimizer_gen'])
         scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
         scheduler_gen.load_state_dict(checkpoint['scheduler_gen'])
-        optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
+        args.start_epochs = int(last_checkpoint.name.split('_')[0]) + 1
+        # optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
 
     ctc_criterion = NoCudnnCTCLoss(reduction='mean', zero_infinity=True).to(device)
     style_criterion = torch.nn.TripletMarginLoss()
@@ -97,13 +98,13 @@ def train(rank, args):
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
 
     if args.wandb and rank == 0:
-        name = f"{args.run_id}_{args.lr_gen}_{args.weight_style}_{args.dis_critic_num}"
+        name = f"{args.run_id}_rand_vgg"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
         # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
 
     collector = MetricCollector()
 
-    for epoch in range(args.epochs):
+    for epoch in range(args.start_epochs, args.epochs):
         teddy.train()
         epoch_start_time = time.time()
 
@@ -213,7 +214,7 @@ def train(rank, args):
             } | collector.dict())
 
         if rank == 0 and epoch % 10 == 0:
-            dst = Path(args.checkpoint_path, args.run_id, f'{epoch:06d}_epochs.pth')
+            dst = args.checkpoint_path / f'{epoch:06d}_epochs.pth'
             dst.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
                 'model': teddy.state_dict(),
@@ -266,8 +267,9 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
-    parser.add_argument('--resume', type=Path, default=None, help="Resume path")
+    parser.add_argument('--resume', action='store_true', help="Resume")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
+    parser.add_argument('--start_epochs', type=int, default=0, help="Start epochs")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
     parser.add_argument('--epochs_size', type=int, default=1000, help="Epochs size")
     parser.add_argument('--world_size', type=int, default=1, help="World size")
@@ -318,6 +320,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
+    args.checkpoint_path = Path(args.checkpoint_path, args.run_id)
 
     set_seed(args.seed)
     if not internet_connection() and args.wandb:
