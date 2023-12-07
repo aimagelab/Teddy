@@ -145,11 +145,10 @@ def train(rank, args):
 
                 # Style loss
                 style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
-                # style_local_positive = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
-                # style_local_negative = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
                 style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
-                collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
-                loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
+                appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
+                collector['style_glob_loss', 'style_local_loss', 'appea_local_loss'] = style_glob_loss, style_local_loss, appea_local_loss
+                loss_gen += (style_glob_loss + style_local_loss) * args.weight_style + appea_local_loss * args.weight_appea
 
                 collector['loss_gen'] = loss_gen
 
@@ -301,6 +300,7 @@ if __name__ == '__main__':
     parser.add_argument('--weight_dis', type=float, default=1.0, help="Discriminator loss weight")
     parser.add_argument('--weight_gen', type=float, default=1.0, help="Generator loss weight")
     parser.add_argument('--weight_style', type=float, default=2.0, help="Style loss weight")
+    parser.add_argument('--weight_appea', type=float, default=2.0, help="Appearance loss weight")
     parser.add_argument('--weight_mse', type=float, default=0.0, help="MSE loss weight")
 
     # Teddy generator

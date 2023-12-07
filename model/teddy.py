@@ -246,6 +246,17 @@ class FontSquareEncoder(nn.Module):
 
     def forward(self, src):
         return self.model(src)
+    
+
+class ImageNetEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1)
+        self.model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.model.classifier = nn.Identity()
+
+    def forward(self, src):
+        return self.model(src)
 
 
 class RandPatchSampler:
@@ -325,6 +336,7 @@ class Teddy(torch.nn.Module):
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
+        self.apperence_encoder = ImageNetEncoder()
         freeze(self.style_encoder)
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
                                         query_size=self.unifont_embedding.symbols_size, channels=img_channels)
@@ -366,15 +378,21 @@ class Teddy(torch.nn.Module):
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        real_samples = self.style_patch_sampler(real_rgb)
-        style_local_real = self.style_encoder(real_samples)
-        fakes_samples = self.style_patch_sampler(fakes_rgb)
-        style_local_fakes = self.style_encoder(fakes_samples)
-        other_samples = self.style_patch_sampler(other_rgb)
-        style_local_other = self.style_encoder(other_samples)
         style_glob_fakes = self.style_encoder(fakes_rgb)
         style_glob_negative = self.style_encoder(other_rgb)
         style_glob_positive = self.style_encoder(real_rgb)
+
+        real_samples = self.style_patch_sampler(real_rgb)
+        fakes_samples = self.style_patch_sampler(fakes_rgb)
+        other_samples = self.style_patch_sampler(other_rgb)
+
+        style_local_real = self.style_encoder(real_samples)
+        style_local_fakes = self.style_encoder(fakes_samples)
+        style_local_other = self.style_encoder(other_samples)
+        
+        appea_local_real = self.apperence_encoder(real_samples)
+        appea_local_fakes = self.apperence_encoder(fakes_samples)
+        appea_local_other = self.apperence_encoder(other_samples)
 
         ocr_fake_pred = self.ocr(fakes_rgb)
 
@@ -406,6 +424,9 @@ class Teddy(torch.nn.Module):
             'style_local_fakes': style_local_fakes,
             'style_local_real': style_local_real,
             'style_local_other': style_local_other,
+            'appea_local_fakes': appea_local_fakes,
+            'appea_local_real': appea_local_real,
+            'appea_local_other': appea_local_other,
             'style_glob_fakes': style_glob_fakes,
             'style_glob_negative': style_glob_negative,
             'style_glob_positive': style_glob_positive,
