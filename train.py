@@ -97,7 +97,7 @@ def train(rank, args):
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
 
-    if args.wandb and rank == 0:
+    if args.wandb and rank == 0 and not args.dryrun:
         name = f"{args.run_id}_{args.tag}"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
         # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
@@ -145,9 +145,9 @@ def train(rank, args):
 
                 # Style loss
                 style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
-                style_local_positive = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
-                style_local_negative = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
-                style_local_loss = style_criterion(preds['style_local_fakes'], style_local_positive, style_local_negative)
+                # style_local_positive = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
+                # style_local_negative = repeat(preds['style_glob_positive'], 'b d -> (b e) d', e=args.style_patch_count)
+                style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
                 collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
                 loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
 
@@ -204,7 +204,7 @@ def train(rank, args):
         # if args.ddp:
         #     collector = gather_collectors(collector)
 
-        if args.wandb and rank == 0:
+        if args.wandb and rank == 0 and not args.dryrun:
             collector.print(f'Epoch {epoch} | ')
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha,
@@ -213,7 +213,7 @@ def train(rank, args):
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
             } | collector.dict())
 
-        if rank == 0 and epoch % 10 == 0:
+        if rank == 0 and epoch % 10 == 0 and not args.dryrun:
             dst = args.checkpoint_path / f'{epoch:06d}_epochs.pth'
             dst.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
@@ -276,6 +276,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint_path', type=str, default='files/checkpoints', help="Checkpoint path")
     parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")
     parser.add_argument('--tag', type=str, default='none', help="Tag")
+    parser.add_argument('--dryrun', action='store_true', help="Dryrun")
 
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")

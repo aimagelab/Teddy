@@ -366,10 +366,12 @@ class Teddy(torch.nn.Module):
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        # real_samples = self.style_patch_sampler(real_rgb)
-        # style_local_real = self.style_encoder(real_samples)
+        real_samples = self.style_patch_sampler(real_rgb)
+        style_local_real = self.style_encoder(real_samples)
         fakes_samples = self.style_patch_sampler(fakes_rgb)
         style_local_fakes = self.style_encoder(fakes_samples)
+        other_samples = self.style_patch_sampler(other_rgb)
+        style_local_other = self.style_encoder(other_samples)
         style_glob_fakes = self.style_encoder(fakes_rgb)
         style_glob_negative = self.style_encoder(other_rgb)
         style_glob_positive = self.style_encoder(real_rgb)
@@ -402,7 +404,8 @@ class Teddy(torch.nn.Module):
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
             'style_local_fakes': style_local_fakes,
-            # 'style_local_real': style_local_real,
+            'style_local_real': style_local_real,
+            'style_local_other': style_local_other,
             'style_glob_fakes': style_glob_fakes,
             'style_glob_negative': style_glob_negative,
             'style_glob_positive': style_glob_positive,

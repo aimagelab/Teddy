@@ -361,7 +361,7 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
     ])
     post_transform = T.Compose([
         T.ToPILImage(),
-        T.RandomShrink(0.8, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
+        T.RandomShrink(1., 1., min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
         T.ToTensor(),
         T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
         T.Normalize((0.5,), (0.5,))
