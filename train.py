@@ -98,7 +98,7 @@ def train(rank, args):
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
 
     if args.wandb and rank == 0:
-        name = f"{args.run_id}_rand_vgg"
+        name = f"{args.run_id}_{args.tag}"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
         # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
 
@@ -275,6 +275,7 @@ if __name__ == '__main__':
     parser.add_argument('--world_size', type=int, default=1, help="World size")
     parser.add_argument('--checkpoint_path', type=str, default='files/checkpoints', help="Checkpoint path")
     parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")
+    parser.add_argument('--tag', type=str, default='none', help="Tag")
 
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
