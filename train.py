@@ -196,6 +196,8 @@ def train(rank, args):
                 # same_author_imgs = make_grid(batch['same_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
                 # other_author_imgs = make_grid(batch['other_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
 
+                eval_page = teddy.generate_eval_page(batch['gen_texts'], batch['style_texts'], batch['style_imgs'])
+
             collector['time/epoch_inference'] = time.time() - epoch_start_time
             collector['ocr_loss_real'] = ocr_loss_real
         collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
@@ -208,6 +210,7 @@ def train(rank, args):
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha,
                 'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
+                'images/page': [wandb.Image(eval_page, caption='eval')],
                 'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
             } | collector.dict())

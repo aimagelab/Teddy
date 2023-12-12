@@ -1,12 +1,13 @@
 from typing import Any
 import torch
 import math
+import string
 
 import pickle
 from torch import nn
 import numpy as np
 from torchvision import models
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
@@ -40,7 +41,7 @@ class CTCLabelConverter(nn.Module):
         self.charset.insert(0, '[blank]')  # dummy '[blank]' token for CTCLoss (index 0)
 
     def encode(self, labels, device='cpu'):
-        assert set(''.join(labels)) < set(self.charset), f'The following character are not in charset {set("".join(labels)) - set(self.charset)}'
+        assert set(''.join(labels)) <= set(self.charset), f'The following character are not in charset {set("".join(labels)) - set(self.charset)}'
         length = torch.LongTensor([len(lbl) for lbl in labels])
         labels = [torch.LongTensor([self.dict[char] for char in lbl]) for lbl in labels]
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=0)
@@ -292,7 +293,7 @@ class PatchSampler:
         self.unit = unit
         self.img_to_seq = Rearrange('b c h (p u) -> b p (h u c)', u=unit)
 
-    def __call__(self, img):
+    def __call__(self, img, img_len=None):
         b, c, h, w = img.shape
         if w < self.patch_width:
             pad_width = self.patch_width - w
@@ -300,7 +301,7 @@ class PatchSampler:
             b, c, h, w = img.shape
 
         device = img.device
-        img_len = torch.tensor([w] * b, device=device)
+        img_len = torch.tensor([w] * b, device=device) if img_len is None else img_len
         img_len = (img_len / self.unit).ceil().long()
         img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.unit])
         rand_idx = torch.randint(img_len.max() + 1 - (self.patch_width // self.unit), (b, self.patch_count)).to(device)
@@ -362,29 +363,29 @@ class Teddy(torch.nn.Module):
         gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
 
         src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
-        fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+        fakes = self.generate(batch['gen_texts'], batch['style_texts'], batch['style_imgs'])
 
         dis_glob_real_pred = self.discriminator(batch['style_imgs'])
         dis_glob_fake_pred = self.discriminator(fakes[:, 0])
 
-        real = self.dis_patch_sampler(batch['style_imgs'])
-        fake = self.dis_patch_sampler(fakes[:, 0])
-        dis_local_real_pred = self.discriminator(real)
-        dis_local_fake_pred = self.discriminator(fake)
+        real_samples = self.dis_patch_sampler(batch['style_imgs'], img_len=batch['style_imgs_len'])
+        fake_samples = self.dis_patch_sampler(fakes[:, 0], img_len=enc_gen_text_len * 16)
+        dis_local_real_pred = self.discriminator(real_samples)
+        dis_local_fake_pred = self.discriminator(fake_samples)
 
-        fakes_rgb = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
-        real_rgb = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
-        other_rgb = repeat(batch['other_author_imgs'], 'b 1 h w -> b 3 h w')
+        fakes_whole = repeat(fakes, 'b e 1 h w -> (b e) 3 h w')
+        real_whole = repeat(batch['style_imgs'], 'b 1 h w -> b 3 h w')
+        other_whole = repeat(batch['other_author_imgs'], 'b 1 h w -> b 3 h w')
         enc_gen_text = repeat(enc_gen_text, 'b w -> (b e) w', e=self.expansion_factor)
         enc_gen_text_len = repeat(enc_gen_text_len, 'b -> (b e)', e=self.expansion_factor)
 
-        style_glob_fakes = self.style_encoder(fakes_rgb)
-        style_glob_negative = self.style_encoder(other_rgb)
-        style_glob_positive = self.style_encoder(real_rgb)
+        style_glob_fakes = self.style_encoder(fakes_whole)
+        style_glob_negative = self.style_encoder(other_whole)
+        style_glob_positive = self.style_encoder(real_whole)
 
-        real_samples = self.style_patch_sampler(real_rgb)
-        fakes_samples = self.style_patch_sampler(fakes_rgb)
-        other_samples = self.style_patch_sampler(other_rgb)
+        real_samples = self.style_patch_sampler(real_whole, img_len=batch['style_imgs_len'])
+        fakes_samples = self.style_patch_sampler(fakes_whole, img_len=enc_gen_text_len * 16)
+        other_samples = self.style_patch_sampler(other_whole, img_len=batch['other_author_imgs_len'])
 
         style_local_real = self.style_encoder(real_samples)
         style_local_fakes = self.style_encoder(fakes_samples)
@@ -394,11 +395,11 @@ class Teddy(torch.nn.Module):
         appea_local_fakes = self.apperence_encoder(fakes_samples)
         appea_local_other = self.apperence_encoder(other_samples)
 
-        ocr_fake_pred = self.ocr(fakes_rgb)
+        ocr_fake_pred = self.ocr(fakes_whole)
 
         if 'last_batch' in batch and batch['last_batch']:
             with torch.inference_mode():
-                ocr_real_pred = self.ocr(real_rgb)
+                ocr_real_pred = self.ocr(real_whole)
         else:
             ocr_real_pred = None
 
@@ -432,3 +433,48 @@ class Teddy(torch.nn.Module):
             'style_glob_positive': style_glob_positive,
         }
         return results
+    
+    
+    def generate(self, gen_texts, style_texts, style_imgs):
+        device = style_imgs.device
+
+        enc_style_text, enc_style_text_len = self.text_converter.encode(style_texts, device)
+        enc_gen_text, enc_gen_text_len = self.text_converter.encode(gen_texts, device)
+
+        style_tgt = self.unifont_embedding(enc_style_text).to(device)
+        gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
+
+        src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
+        return self.generator.forward_gen(src_style_emb, gen_tgt)
+    
+    def generate_eval_page(self, gen_texts, style_texts, style_imgs, max_batch_size=4):
+        gen_texts = gen_texts[:max_batch_size]
+        style_texts = style_texts[:max_batch_size]
+        style_imgs = style_imgs[:max_batch_size]
+        batch_size = len(gen_texts)
+
+        alphabet = list(string.ascii_letters + string.digits)
+
+        fakes = []
+        fakes.append(self.generate(style_texts, style_texts, style_imgs))  # fakes_same_text
+        fakes.append(self.generate([''.join(alphabet)] * batch_size, style_texts, style_imgs))  # fakes_alph_join
+        alph_sep = ' '.join(alphabet)
+        fakes.append(self.generate([alph_sep[:len(alph_sep) // 2]] * batch_size, style_texts, style_imgs))  # fakes_alph_sep_first_half
+        fakes.append(self.generate([alph_sep[len(alph_sep) // 2:]] * batch_size, style_texts, style_imgs))  # fakes_alph_sep_second_half
+        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_1
+        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_2
+        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_3
+        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_4
+        fakes.append(self.generate([txt.split()[0] for txt in gen_texts], style_texts, style_imgs))  # fakes_short
+        fakes.append(self.generate([txt + ' ' + txt for txt in gen_texts], style_texts, style_imgs))  # fakes_long
+
+        max_width = max([fake.shape[-1] for fake in fakes])
+        fakes = [torch.nn.functional.pad(fake, (0, max_width - fake.shape[-1]), value=1) for fake in fakes]
+        fakes = torch.cat(fakes, dim=-2)[:, 0]
+
+        max_width = max([img.shape[-1] for img in style_imgs])
+        max_height = max([fake.shape[-2] for fake in fakes])
+        style_imgs = [torch.nn.functional.pad(img, (0, max_width - img.shape[-1], 0, max_height - img.shape[-2]), value=1) for img in style_imgs]
+        style_imgs = torch.stack(style_imgs)
+
+        return make_grid(torch.cat((style_imgs, fakes), dim=-1), nrow=1)
