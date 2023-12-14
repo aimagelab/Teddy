@@ -1,6 +1,5 @@
 from typing import Any
 import torch
-import math
 import string
 
 import pickle
@@ -178,53 +177,7 @@ class TeddyGenerator(nn.Module):
         style_emb = self.forward_style(style_imgs, style_tgt)
         fakes = self.forward_gen(style_emb, gen_tgt)
         return fakes
-
-
-# class TeddyDiscriminator(torch.nn.Module):
-#     def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=2048, channels=3, dropout=0.1, emb_dropout=0.1, expansion_factor=1):
-#         super().__init__()
-#         image_height, image_width = pair(image_size)
-#         patch_height, patch_width = pair(patch_size)
-
-#         assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
-
-#         patch_dim = channels * patch_height * patch_width
-#         self.expansion_factor = expansion_factor
-#         self.patch_width = patch_width
-
-#         self.to_patch_sequence = Rearrange('b c h (p pw) -> b p (h pw c)', pw=self.patch_width)
-#         self.to_patch_embedding = nn.Sequential(
-#             nn.LayerNorm(patch_dim),
-#             nn.Linear(patch_dim, dim),
-#             nn.LayerNorm(dim),
-#         )
-
-#         self.num_patches = (image_height // patch_height) * (image_width // patch_width)
-#         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, dim))
-#         self.cls_tokens = nn.Parameter(torch.randn(1, 1, dim))
-#         self.dropout = nn.Dropout(emb_dropout)
-
-#         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
-#         self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth)
-#         self.fc_real_fake = nn.Linear(dim, 1)
-
-#     def forward(self, src):
-#         b, *_ = src.shape
-#         src = self.to_patch_sequence(src)
-#         src = self.to_patch_embedding(src)
-
-#         cls_tokens = repeat(self.cls_tokens, '1 c d -> b c d', b=b)
-
-#         x = torch.cat((cls_tokens, src), dim=1)
-#         x += self.pos_embedding
-#         x = self.dropout(x)
-
-#         x = self.transformer_encoder(x)
-
-#         real_fake = self.fc_real_fake(x[:, 0])
-
-#         return real_fake
-
+    
 
 class ResnetDiscriminator(nn.Module):
     def __init__(self):
@@ -337,7 +290,7 @@ class Teddy(torch.nn.Module):
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
-        self.apperence_encoder = ImageNetEncoder()
+        # self.apperence_encoder = lpips.LPIPS(net='vgg')
         freeze(self.style_encoder)
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
                                         query_size=self.unifont_embedding.symbols_size, channels=img_channels)
@@ -353,17 +306,27 @@ class Teddy(torch.nn.Module):
         self.style_patch_sampler = PatchSampler(style_patch_width, style_patch_count)
         self.collector = MetricCollector()
 
-    def forward(self, batch):
-        device = batch['style_imgs'].device
 
-        enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'], device)
-        enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'], device)
+    def generate(self, gen_texts, style_texts, style_imgs, enc_style_text=None, enc_gen_text=None):
+        device = style_imgs.device
+
+        if enc_style_text is None or enc_gen_text is None:
+            enc_style_text, _ = self.text_converter.encode(style_texts, device)
+            enc_gen_text, _ = self.text_converter.encode(gen_texts, device)
 
         style_tgt = self.unifont_embedding(enc_style_text).to(device)
         gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
 
-        src_style_emb = self.generator.forward_style(batch['style_imgs'], style_tgt)
-        fakes = self.generate(batch['gen_texts'], batch['style_texts'], batch['style_imgs'])
+        src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
+        fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+        return fakes
+    
+
+    def forward(self, batch):
+        device = next(self.parameters()).device
+        enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_texts'], device)
+        enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_texts'], device)
+        fakes = self.generate(batch['gen_texts'], batch['style_texts'], batch['style_imgs'], enc_style_text, enc_gen_text)
 
         dis_glob_real_pred = self.discriminator(batch['style_imgs'])
         dis_glob_fake_pred = self.discriminator(fakes[:, 0])
@@ -384,16 +347,16 @@ class Teddy(torch.nn.Module):
         style_glob_positive = self.style_encoder(real_whole)
 
         real_samples = self.style_patch_sampler(real_whole, img_len=batch['style_imgs_len'])
-        fakes_samples = self.style_patch_sampler(fakes_whole, img_len=enc_gen_text_len * 16)
+        fake_samples = self.style_patch_sampler(fakes_whole, img_len=enc_gen_text_len * 16)
         other_samples = self.style_patch_sampler(other_whole, img_len=batch['other_author_imgs_len'])
 
         style_local_real = self.style_encoder(real_samples)
-        style_local_fakes = self.style_encoder(fakes_samples)
+        style_local_fakes = self.style_encoder(fake_samples)
         style_local_other = self.style_encoder(other_samples)
         
-        appea_local_real = self.apperence_encoder(real_samples)
-        appea_local_fakes = self.apperence_encoder(fakes_samples)
-        appea_local_other = self.apperence_encoder(other_samples)
+        # appea_local_real = self.apperence_encoder(real_samples)
+        # appea_local_fakes = self.apperence_encoder(fake_samples)
+        # appea_local_other = self.apperence_encoder(other_samples)
 
         ocr_fake_pred = self.ocr(fakes_whole)
 
@@ -425,27 +388,17 @@ class Teddy(torch.nn.Module):
             'style_local_fakes': style_local_fakes,
             'style_local_real': style_local_real,
             'style_local_other': style_local_other,
-            'appea_local_fakes': appea_local_fakes,
-            'appea_local_real': appea_local_real,
-            'appea_local_other': appea_local_other,
+            # 'appea_local_fakes': appea_local_fakes,
+            # 'appea_local_real': appea_local_real,
+            # 'appea_local_other': appea_local_other,
+            'real_samples': real_samples,
+            'fake_samples': fake_samples,
             'style_glob_fakes': style_glob_fakes,
             'style_glob_negative': style_glob_negative,
             'style_glob_positive': style_glob_positive,
         }
         return results
     
-    
-    def generate(self, gen_texts, style_texts, style_imgs):
-        device = style_imgs.device
-
-        enc_style_text, enc_style_text_len = self.text_converter.encode(style_texts, device)
-        enc_gen_text, enc_gen_text_len = self.text_converter.encode(gen_texts, device)
-
-        style_tgt = self.unifont_embedding(enc_style_text).to(device)
-        gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
-
-        src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
-        return self.generator.forward_gen(src_style_emb, gen_tgt)
     
     def generate_eval_page(self, gen_texts, style_texts, style_imgs, max_batch_size=4):
         gen_texts = gen_texts[:max_batch_size]
@@ -459,12 +412,12 @@ class Teddy(torch.nn.Module):
         fakes.append(self.generate(style_texts, style_texts, style_imgs))  # fakes_same_text
         fakes.append(self.generate([''.join(alphabet)] * batch_size, style_texts, style_imgs))  # fakes_alph_join
         alph_sep = ' '.join(alphabet)
-        fakes.append(self.generate([alph_sep[:len(alph_sep) // 2]] * batch_size, style_texts, style_imgs))  # fakes_alph_sep_first_half
+        fakes.append(self.generate([alph_sep[:len(alph_sep) // 2 + 1]] * batch_size, style_texts, style_imgs))  # fakes_alph_sep_first_half
         fakes.append(self.generate([alph_sep[len(alph_sep) // 2:]] * batch_size, style_texts, style_imgs))  # fakes_alph_sep_second_half
         fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_1
-        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_2
-        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_3
-        fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_4
+        # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_2
+        # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_3
+        # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_4
         fakes.append(self.generate([txt.split()[0] for txt in gen_texts], style_texts, style_imgs))  # fakes_short
         fakes.append(self.generate([txt + ' ' + txt for txt in gen_texts], style_texts, style_imgs))  # fakes_long
 
