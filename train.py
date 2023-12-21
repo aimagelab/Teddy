@@ -262,10 +262,9 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     except Exception as e:
         cleanup()
         raise e
+    
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+def add_arguments(parser):
     parser.add_argument('--lr_gen', type=float, default=0.00005)
     parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--batch_size', type=int, default=4)
@@ -325,6 +324,12 @@ if __name__ == '__main__':
     # Teddy style
     parser.add_argument('--style_patch_width', type=int, default=256, help="Style patch width")
     parser.add_argument('--style_patch_count', type=int, default=4, help="Style patch count")
+    return parser
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser = add_arguments(parser)
     args = parser.parse_args()
 
     args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
