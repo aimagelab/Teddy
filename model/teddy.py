@@ -290,7 +290,8 @@ class Teddy(torch.nn.Module):
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
-        # self.apperence_encoder = lpips.LPIPS(net='vgg')
+        self.apperence_encoder = ImageNetEncoder()
+
         freeze(self.style_encoder)
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
                                         query_size=self.unifont_embedding.symbols_size, channels=img_channels)
@@ -354,9 +355,9 @@ class Teddy(torch.nn.Module):
         style_local_fakes = self.style_encoder(fake_samples)
         style_local_other = self.style_encoder(other_samples)
         
-        # appea_local_real = self.apperence_encoder(real_samples)
-        # appea_local_fakes = self.apperence_encoder(fake_samples)
-        # appea_local_other = self.apperence_encoder(other_samples)
+        appea_local_real = self.apperence_encoder(real_samples)
+        appea_local_fakes = self.apperence_encoder(fake_samples)
+        appea_local_other = self.apperence_encoder(other_samples)
 
         ocr_fake_pred = self.ocr(fakes_whole)
 
@@ -388,9 +389,9 @@ class Teddy(torch.nn.Module):
             'style_local_fakes': style_local_fakes,
             'style_local_real': style_local_real,
             'style_local_other': style_local_other,
-            # 'appea_local_fakes': appea_local_fakes,
-            # 'appea_local_real': appea_local_real,
-            # 'appea_local_other': appea_local_other,
+            'appea_local_fakes': appea_local_fakes,
+            'appea_local_real': appea_local_real,
+            'appea_local_other': appea_local_other,
             'real_samples': real_samples,
             'fake_samples': fake_samples,
             'style_glob_fakes': style_glob_fakes,

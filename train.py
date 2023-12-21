@@ -94,7 +94,7 @@ def train(rank, args):
     style_criterion = torch.nn.TripletMarginLoss()
     # tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
-    lpips_criterion = lpips.LPIPS(net='vgg').to(device)
+    # lpips_criterion = lpips.LPIPS(net='vgg').to(device)
 
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
@@ -148,8 +148,7 @@ def train(rank, args):
                 # Style loss
                 style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
                 style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
-                # appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
-                appea_local_loss = lpips_criterion(preds['real_samples'], preds['fake_samples']).mean()
+                appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
                 collector['style_glob_loss', 'style_local_loss', 'appea_local_loss'] = style_glob_loss, style_local_loss, appea_local_loss
                 loss_gen += (style_glob_loss + style_local_loss) * args.weight_style + appea_local_loss * args.weight_appea
 
