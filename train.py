@@ -3,25 +3,26 @@ import argparse
 import random
 import numpy as np
 import os
-import lpips
-from model.teddy import Teddy, freeze, unfreeze
-from pathlib import Path
-from datasets import dataset_factory
+import requests
+import uuid
+import wandb
+import time
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
+from pathlib import Path
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import GradScaler
+from torchvision.utils import make_grid
+from einops import rearrange, repeat
+from tqdm import tqdm
+from torch.profiler import tensorboard_trace_handler
+
+from model.teddy import Teddy, freeze, unfreeze
+from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss
 from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, TeddyDataParallel, ChunkLoader
-from torchvision.utils import make_grid
-from einops import rearrange, repeat
-import wandb
-from tqdm import tqdm
-import time
-from torch.profiler import tensorboard_trace_handler
-import requests
-import uuid
 
 
 def free_mem_percent():
