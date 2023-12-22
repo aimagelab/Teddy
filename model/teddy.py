@@ -69,7 +69,7 @@ class CTCLabelConverter(nn.Module):
 class UnifontModule(nn.Module):
     def __init__(self, charset):
         super(UnifontModule, self).__init__()
-        self.charset = set(charset)
+        self.charset = sorted(set(charset))
         self.symbols = self.get_symbols()
         self.symbols_size = self.symbols.size(1)
 
@@ -286,15 +286,16 @@ class Teddy(torch.nn.Module):
                  gen_expansion_factor, dis_patch_width, dis_patch_count, style_patch_width, style_patch_count, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
-        self.unifont_embedding = UnifontModule(charset)
         self.text_converter = CTCLabelConverter(charset)
+        self.style_embedding = UnifontModule(charset)
+        self.gen_embedding = UnifontModule(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
         self.apperence_encoder = ImageNetEncoder()
 
         freeze(self.style_encoder)
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
-                                        query_size=self.unifont_embedding.symbols_size, channels=img_channels)
+                                        query_size=self.gen_embedding.symbols_size, channels=img_channels)
         # self.discriminator = ResnetDiscriminator()
         # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width * dis_patch_count), (img_height, gen_patch_width), dim=dis_dim,
         #                                         expansion_factor=gen_expansion_factor, channels=img_channels)
@@ -315,8 +316,8 @@ class Teddy(torch.nn.Module):
             enc_style_text, _ = self.text_converter.encode(style_texts, device)
             enc_gen_text, _ = self.text_converter.encode(gen_texts, device)
 
-        style_tgt = self.unifont_embedding(enc_style_text).to(device)
-        gen_tgt = self.unifont_embedding(enc_gen_text).to(device)
+        style_tgt = self.style_embedding(enc_style_text).to(device)
+        gen_tgt = self.gen_embedding(enc_gen_text).to(device)
 
         src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
         fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
