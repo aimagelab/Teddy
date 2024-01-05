@@ -212,6 +212,7 @@ def train(rank, args):
             collector.print(f'Epoch {epoch} | ')
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha,
+                'epoch': epoch,
                 'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
                 'images/page': [wandb.Image(eval_page, caption='eval')],
                 'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
@@ -305,7 +306,7 @@ def add_arguments(parser):
     parser.add_argument('--weight_dis', type=float, default=1.0, help="Discriminator loss weight")
     parser.add_argument('--weight_gen', type=float, default=1.0, help="Generator loss weight")
     parser.add_argument('--weight_style', type=float, default=2.0, help="Style loss weight")
-    parser.add_argument('--weight_appea', type=float, default=2.0, help="Appearance loss weight")
+    parser.add_argument('--weight_appea', type=float, default=3.0, help="Appearance loss weight")
     parser.add_argument('--weight_mse', type=float, default=0.0, help="MSE loss weight")
 
     # Teddy generator

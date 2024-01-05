@@ -52,8 +52,9 @@ class TextSampler:
         bins = [[] for _ in range(batch_size)]
         while random_words:
             word = random_words.pop()
-            smallest_bin = np.argmin([sum(len(w) for w in bin) for bin in bins])
-            bins[smallest_bin].append(word)
+            # smallest_bin = np.argmin([sum(len(w) for w in bin) for bin in bins])
+            random_bin_idx = random.randint(0, len(bins) - 1)
+            bins[random_bin_idx].append(word)
         sampled_lines = [' '.join(line) for line in bins]
 
         clamped_lines = []
