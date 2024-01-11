@@ -10,10 +10,11 @@ from torchvision.utils import save_image, make_grid
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from model.cnn_decoder import FCNDecoder
-from model.ocr import OrigamiNet
-from model.hwt.model import Discriminator as HWTDiscriminator
+from .cnn_decoder import FCNDecoder
+from .ocr import OrigamiNet
+from .hwt.model import Discriminator as HWTDiscriminator
 from util.functional import Clock, MetricCollector
+from .content_modules import UnifontModule, ConvUnifontModule, OnehotModule, UnifontShiftTransform
 
 
 def pair(t):
@@ -66,35 +67,6 @@ class CTCLabelConverter(nn.Module):
         return self.decode(preds_index, preds_size)
 
 
-class UnifontModule(nn.Module):
-    def __init__(self, charset):
-        super(UnifontModule, self).__init__()
-        self.charset = sorted(set(charset))
-        self.symbols = self.get_symbols()
-        self.symbols_size = self.symbols.size(1)
-
-    def get_symbols(self):
-        with open(f"files/unifont.pickle", "rb") as f:
-            symbols = pickle.load(f)
-
-        symbols = {sym['idx'][0]: sym['mat'].astype(np.float32).flatten() for sym in symbols}
-        symbols = [symbols[ord(char)] for char in self.charset]
-        symbols.insert(0, np.zeros_like(symbols[0]))
-        symbols = np.stack(symbols)
-        return torch.from_numpy(symbols).float()
-
-    def _apply(self, fn):
-        super(UnifontModule, self)._apply(fn)
-        self.symbols = fn(self.symbols)
-        return self
-
-    def forward(self, QR):
-        return self.symbols[QR]
-
-    def __len__(self):
-        return len(self.symbols)
-
-
 class NoiseExpansion(nn.Module):
     def __init__(self, expansion_factor=1, noise_alpha=0.1):
         super().__init__()
@@ -110,8 +82,8 @@ class NoiseExpansion(nn.Module):
 
 class TeddyGenerator(nn.Module):
     def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=512,
-                 expansion_factor=1, noise_alpha=0.0, query_size=256,
-                 channels=3, num_style=3, dropout=0.1, emb_dropout=0.1):
+                 expansion_factor=1, noise_alpha=0.0, channels=3, num_style=3, dropout=0.1,
+                 emb_dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}):
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -132,8 +104,11 @@ class TeddyGenerator(nn.Module):
         self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + num_style, dim))
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
 
-        self.query_style_linear = torch.nn.Linear(query_size, dim)
-        self.query_gen_linear = torch.nn.Linear(query_size, dim)
+        assert embedding_module in globals(), f'Embedding module {embedding_module} not found.'
+        embedding_module = globals()[embedding_module]
+        embedding_module_kwargs['dim'] = dim
+        self.style_embedding = embedding_module(**embedding_module_kwargs)
+        self.gen_embedding = embedding_module(**embedding_module_kwargs)
 
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
         transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
@@ -160,12 +135,12 @@ class TeddyGenerator(nn.Module):
 
         x = self.transformer_encoder(x)
 
-        style_tgt = self.query_style_linear(style_tgt)
+        style_tgt = self.style_embedding(style_tgt)
         x = self.transformer_style_decoder(style_tgt, x)
         return x
 
     def forward_gen(self, style_emb, gen_tgt):
-        gen_tgt = self.query_gen_linear(gen_tgt)
+        gen_tgt = self.gen_embedding(gen_tgt)
         x = self.transformer_gen_decoder(gen_tgt, style_emb)
 
         x = self.batch_expansion(x)
@@ -283,19 +258,19 @@ class TeddyDiscriminator(torch.nn.Module):
 
 class Teddy(torch.nn.Module):
     def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width,
-                 gen_expansion_factor, dis_patch_width, dis_patch_count, style_patch_width, style_patch_count, **kwargs) -> None:
+                 gen_expansion_factor, gen_emb_module, gen_emb_shift, dis_patch_width, dis_patch_count, style_patch_width,
+                 style_patch_count, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
         self.text_converter = CTCLabelConverter(charset)
-        self.style_embedding = UnifontModule(charset)
-        self.gen_embedding = UnifontModule(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
         self.apperence_encoder = ImageNetEncoder()
 
         freeze(self.style_encoder)
+        embedding_module_kwargs = {'charset': charset, 'transforms': UnifontShiftTransform(gen_emb_shift)}
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
-                                        query_size=self.gen_embedding.symbols_size, channels=img_channels)
+                                        channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs)
         # self.discriminator = ResnetDiscriminator()
         # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width * dis_patch_count), (img_height, gen_patch_width), dim=dis_dim,
         #                                         expansion_factor=gen_expansion_factor, channels=img_channels)
@@ -316,11 +291,8 @@ class Teddy(torch.nn.Module):
             enc_style_text, _ = self.text_converter.encode(style_texts, device)
             enc_gen_text, _ = self.text_converter.encode(gen_texts, device)
 
-        style_tgt = self.style_embedding(enc_style_text).to(device)
-        gen_tgt = self.gen_embedding(enc_gen_text).to(device)
-
-        src_style_emb = self.generator.forward_style(style_imgs, style_tgt)
-        fakes = self.generator.forward_gen(src_style_emb, gen_tgt)
+        src_style_emb = self.generator.forward_style(style_imgs, enc_style_text)
+        fakes = self.generator.forward_gen(src_style_emb, enc_gen_text)
         return fakes
     
 
@@ -367,10 +339,6 @@ class Teddy(torch.nn.Module):
                 ocr_real_pred = self.ocr(real_whole)
         else:
             ocr_real_pred = None
-
-        # fakes_exp = rearrange(fakes, 'b e c h w -> (b e) c h w')
-        # gen_tgt = repeat(gen_tgt, 'b l d -> (b e) l d', e=self.expansion_factor)
-        # gen_style_emb = self.generator.forward_style(fakes_exp, gen_tgt)
 
         results = {
             'fakes': fakes,

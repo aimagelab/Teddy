@@ -315,6 +315,8 @@ def add_arguments(parser):
     parser.add_argument('--gen_patch_width', type=int, default=16, help="Patch width")
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
     parser.add_argument('--gen_text_line_len', type=int, default=32, help="Text line len")
+    parser.add_argument('--gen_emb_module', type=str, default='UnifontModule', help="Embedding module")
+    parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
 
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")
