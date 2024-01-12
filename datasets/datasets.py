@@ -350,7 +350,7 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None, img_channels=3, db_preload=True, **kwargs):
+def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None, img_channels=3, db_preload=False, **kwargs):
     assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
     pre_transform = T.Compose([
         T.Convert(img_channels),
