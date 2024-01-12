@@ -12,6 +12,7 @@ class CheckpointScheduler:
         self.model.load_state_dict(self.checkpoints_a)
         self.model.load_state_dict(self.checkpoints_b)
         self.last_alpha = None
+        self._step(0)
 
     def _step(self, alpha):
         self.last_alpha = alpha
@@ -126,6 +127,7 @@ class AlternatingScheduler:
         self.checkpoints = checkpoints
         self.counter = 0
         self.last_alpha = None
+        self._step(0)
 
     def _step(self, idx):
         self.last_alpha = idx

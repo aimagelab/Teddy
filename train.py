@@ -76,7 +76,6 @@ def train(rank, args):
         case 'rand_line': optimizer_ocr = RandomLinearScheduler(teddy.ocr, ocr_checkpoint_a['model'], period=len(loader) * 20)
         case 'rand_reduce': optimizer_ocr = RandReducingScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'])
         case 'fixed': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'])
-    optimizer_ocr._step(0)
 
     scaler = GradScaler()
 
