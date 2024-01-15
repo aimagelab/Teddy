@@ -128,14 +128,14 @@ class TeddyGenerator(nn.Module):
         x = self.to_patch_embedding(style_imgs)
         b, n, _ = x.shape
 
-        style_tokens = self.style_tokens.repeat(b, 1, 1)
-        x = torch.cat((style_tokens, x), dim=1)
         assert x.shape[1] <= self.pos_embedding.shape[1], f'Number of style tokens {x.shape[1]} > positional embeddings {self.pos_embedding.shape[1]}. {style_imgs.shape=}'
-        x += self.pos_embedding[:, :n + self.style_tokens.size(1)]
+        x += self.pos_embedding[:, :n]
 
         x = self.transformer_encoder(x)
 
         style_tgt = self.style_embedding(style_tgt)
+        style_tokens = self.style_tokens.repeat(b, 1, 1)
+        style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
         x = self.transformer_style_decoder(style_tgt, x)
         return x
 
@@ -152,7 +152,7 @@ class TeddyGenerator(nn.Module):
         style_emb = self.forward_style(style_imgs, style_tgt)
         fakes = self.forward_gen(style_emb, gen_tgt)
         return fakes
-    
+
 
 class ResnetDiscriminator(nn.Module):
     def __init__(self):
@@ -175,7 +175,7 @@ class FontSquareEncoder(nn.Module):
 
     def forward(self, src):
         return self.model(src)
-    
+
 
 class ImageNetEncoder(nn.Module):
     def __init__(self):
@@ -283,7 +283,6 @@ class Teddy(torch.nn.Module):
         self.style_patch_sampler = PatchSampler(style_patch_width, style_patch_count)
         self.collector = MetricCollector()
 
-
     def generate(self, gen_texts, style_texts, style_imgs, enc_style_text=None, enc_gen_text=None):
         device = style_imgs.device
 
@@ -294,7 +293,6 @@ class Teddy(torch.nn.Module):
         src_style_emb = self.generator.forward_style(style_imgs, enc_style_text)
         fakes = self.generator.forward_gen(src_style_emb, enc_gen_text)
         return fakes
-    
 
     def forward(self, batch):
         device = next(self.parameters()).device
@@ -327,7 +325,7 @@ class Teddy(torch.nn.Module):
         style_local_real = self.style_encoder(real_samples)
         style_local_fakes = self.style_encoder(fake_samples)
         style_local_other = self.style_encoder(other_samples)
-        
+
         appea_local_real = self.apperence_encoder(real_samples)
         appea_local_fakes = self.apperence_encoder(fake_samples)
         appea_local_other = self.apperence_encoder(other_samples)
@@ -369,8 +367,7 @@ class Teddy(torch.nn.Module):
             'style_glob_positive': style_glob_positive,
         }
         return results
-    
-    
+
     def generate_eval_page(self, gen_texts, style_texts, style_imgs, max_batch_size=4):
         gen_texts = gen_texts[:max_batch_size]
         style_texts = style_texts[:max_batch_size]

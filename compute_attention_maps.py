@@ -58,7 +58,8 @@ def compute_attention(rank, args):
                 attention_maps.append(layer.attention_map.detach().cpu())
             attention_maps = torch.cat(attention_maps, dim=1).squeeze(0)
             attention_maps /= attention_maps.max()
-            attention_ctrl = torch.Tensor([c in set(batch['gen_texts'][0]) for c in batch['style_texts'][0]])
+            glob_style_tokens = [True] * (attention_maps.shape[1] - len(batch['style_texts'][0]))
+            attention_ctrl = torch.Tensor(glob_style_tokens + [c in set(batch['gen_texts'][0]) for c in batch['style_texts'][0]])
             attention_maps = torch.cat([attention_ctrl.unsqueeze(0), attention_maps], dim=0)
 
             dst = Path(args.checkpoint_path, 'attention_maps')
