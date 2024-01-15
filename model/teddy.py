@@ -389,7 +389,8 @@ class Teddy(torch.nn.Module):
         # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_2
         # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_3
         # fakes.append(self.generate(gen_texts, style_texts, style_imgs))  # fakes_4
-        fakes.append(self.generate([txt.split()[0] for txt in gen_texts], style_texts, style_imgs))  # fakes_short
+        first_word = lambda txt: txt.split()[0] if len(txt.split()) > 0 else ''
+        fakes.append(self.generate([first_word(txt) for txt in gen_texts], style_texts, style_imgs))  # fakes_short
         fakes.append(self.generate([txt + ' ' + txt for txt in gen_texts], style_texts, style_imgs))  # fakes_long
 
         max_width = max([fake.shape[-1] for fake in fakes])
