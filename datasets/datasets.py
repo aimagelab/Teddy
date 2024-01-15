@@ -58,8 +58,8 @@ class Base_dataset(Dataset):
 
         author = self.imgs_to_author[style_img_path.stem]
         same_author_imgs = self.author_to_imgs[author]
-        # other_author_imgs = self.imgs_set - same_author_imgs   # sample from all other authors
-        other_author_imgs = same_author_imgs - {style_img_path}  # sample from the same author, but not the same image
+        other_author_imgs = self.imgs_set - same_author_imgs   # sample from all other authors
+        # other_author_imgs = same_author_imgs - {style_img_path}  # sample from the same author, but not the same image
 
         multi_author = len(other_author_imgs) > 0
         other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
