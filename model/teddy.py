@@ -334,11 +334,12 @@ class Teddy(torch.nn.Module):
 
         ocr_fake_pred = self.ocr(fakes_whole)
 
-        if 'last_batch' in batch and batch['last_batch']:
+        ocr_real_pred = None
+        if 'ocr_real_train' in batch and batch['ocr_real_train']:
+            ocr_real_pred = self.ocr(real_whole)
+        elif 'ocr_real_eval' in batch and batch['ocr_real_eval']:
             with torch.inference_mode():
                 ocr_real_pred = self.ocr(real_whole)
-        else:
-            ocr_real_pred = None
 
         results = {
             'fakes': fakes,

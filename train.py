@@ -69,13 +69,15 @@ def train(rank, args):
     scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
 
     match args.ocr_scheduler:
+        case 'train': optimizer_ocr = torch.optim.AdamW(teddy.ocr.parameters(), lr=0.0001)
         case 'sine': optimizer_ocr = SineCheckpointScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'], period=len(loader))
-        case 'alt': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'], ocr_checkpoint_c['model'])
+        case 'alt1': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'])
+        case 'alt2': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'])
+        case 'alt3': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'], ocr_checkpoint_c['model'])
         case 'line': optimizer_ocr = OneLinearScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'], period=len(loader) * 20)
         case 'rand': optimizer_ocr = RandCheckpointScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'])
         case 'rand_line': optimizer_ocr = RandomLinearScheduler(teddy.ocr, ocr_checkpoint_a['model'], period=len(loader) * 20)
         case 'rand_reduce': optimizer_ocr = RandReducingScheduler(teddy.ocr, ocr_checkpoint_a['model'], ocr_checkpoint_b['model'])
-        case 'fixed': optimizer_ocr = AlternatingScheduler(teddy.ocr, ocr_checkpoint_a['model'])
 
     scaler = GradScaler()
 
@@ -88,7 +90,7 @@ def train(rank, args):
         scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
         scheduler_gen.load_state_dict(checkpoint['scheduler_gen'])
         args.start_epochs = int(last_checkpoint.name.split('_')[0]) + 1
-        # optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
+        optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
 
     ctc_criterion = NoCudnnCTCLoss(reduction='mean', zero_infinity=True).to(device)
     style_criterion = torch.nn.TripletMarginLoss()
@@ -115,7 +117,8 @@ def train(rank, args):
         clock.start()
 
         for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
-            batch['last_batch'] = idx == len(loader) - 1
+            batch['ocr_real_train'] = args.ocr_scheduler == 'train'
+            batch['ocr_real_eval'] = idx == len(loader) - 1
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 clock.stop()  # time/data_load
 
@@ -145,6 +148,13 @@ def train(rank, args):
                 collector['ocr_loss_fake'] = ocr_loss_fake
                 loss_gen += ocr_loss_fake * args.weight_ocr
 
+                if batch['ocr_real_train']:
+                    preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
+                    preds['ocr_real_pred'] = preds['ocr_real_pred'].permute(1, 0, 2).log_softmax(2)
+                    ocr_loss_real = ctc_criterion(preds['ocr_real_pred'], preds['enc_style_text'], preds_size, preds['enc_style_text_len'])
+                    collector['ocr_loss_real'] = ocr_loss_real
+                    loss_ocr = ocr_loss_real * args.weight_ocr
+
                 # Style loss
                 style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
                 style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
@@ -159,19 +169,26 @@ def train(rank, args):
             if idx % args.dis_critic_num == 0:
                 optimizer_dis.zero_grad()
             optimizer_gen.zero_grad()
+            optimizer_ocr.zero_grad()
 
             if idx % args.dis_critic_num == 0:
                 with GradSwitch(teddy, teddy.discriminator):
                     scaler.scale(loss_dis).backward(retain_graph=True)
             with GradSwitch(teddy, teddy.generator):
                 scaler.scale(loss_gen).backward(retain_graph=True)
+            if batch['ocr_real_train']:
+                with GradSwitch(teddy, teddy.ocr):
+                    scaler.scale(loss_ocr).backward(retain_graph=True)
 
             if idx % args.dis_critic_num == 0:
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
-            scaler.update()
+            if batch['ocr_real_train']:
+                scaler.step(optimizer_ocr)
+            else:
+                optimizer_ocr.step()
 
-            optimizer_ocr.step()
+            scaler.update()
 
         collector['time/epoch_train'] = time.time() - epoch_start_time
         collector['time/iter_train'] = (time.time() - epoch_start_time) / len(dataset)
@@ -186,9 +203,10 @@ def train(rank, args):
                 fake_pred = teddy.text_converter.decode_batch(preds['ocr_fake_pred'])[0]
                 fake_gt = batch['gen_texts'][0]
 
-                preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
-                preds['ocr_real_pred'] = preds['ocr_real_pred'].permute(1, 0, 2).log_softmax(2)
-                ocr_loss_real = ctc_criterion(preds['ocr_real_pred'], preds['enc_style_text'], preds_size, preds['enc_style_text_len'])
+                if not batch['ocr_real_train']: 
+                    preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
+                    preds['ocr_real_pred'] = preds['ocr_real_pred'].permute(1, 0, 2).log_softmax(2)
+                    ocr_loss_real = ctc_criterion(preds['ocr_real_pred'], preds['enc_style_text'], preds_size, preds['enc_style_text_len'])
 
                 real = batch['style_imgs'][0].detach().cpu().permute(1, 2, 0).numpy()
                 real_pred = teddy.text_converter.decode_batch(preds['ocr_real_pred'])[0]
@@ -210,7 +228,7 @@ def train(rank, args):
         if args.wandb and rank == 0 and not args.dryrun:
             collector.print(f'Epoch {epoch} | ')
             wandb.log({
-                'alphas': optimizer_ocr.last_alpha,
+                'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
                 'epoch': epoch,
                 'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
                 'images/page': [wandb.Image(eval_page, caption='eval')],
@@ -227,7 +245,7 @@ def train(rank, args):
                 'optimizer_gen': optimizer_gen.state_dict(),
                 'scheduler_dis': scheduler_dis.state_dict(),
                 'scheduler_gen': scheduler_gen.state_dict(),
-                # 'optimizer_ocr': optimizer_ocr.state_dict(),
+                'optimizer_ocr': optimizer_ocr.state_dict(),
                 'args': vars(args),
             }, dst)
 
@@ -267,6 +285,7 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
 def add_arguments(parser):
     parser.add_argument('--lr_gen', type=float, default=0.00005)
     parser.add_argument('--lr_dis', type=float, default=0.00005)
+    parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
@@ -298,7 +317,7 @@ def add_arguments(parser):
     parser.add_argument('--ocr_checkpoint_a', type=Path, default='files/f745_all_datasets/0345000_iter.pth', help="OCR checkpoint a")
     parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/0ea8_all_datasets/0345000_iter.pth', help="OCR checkpoint b")
     parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/0259_all_datasets/0355000_iter.pth', help="OCR checkpoint c")
-    parser.add_argument('--ocr_scheduler', type=str, default='alt', help="OCR scheduler")
+    parser.add_argument('--ocr_scheduler', type=str, default='alt3', help="OCR scheduler")
 
     # Teddy loss
     parser.add_argument('--weight_ocr', type=float, default=1.5, help="OCR loss weight")

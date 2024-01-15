@@ -38,6 +38,9 @@ class CheckpointScheduler:
         self.checkpoints_a = state_dict['checkpoints_a']
         self.checkpoints_b = state_dict['checkpoints_b']
 
+    def zero_grad(self):
+        pass
+
 
 class RandCheckpointScheduler(CheckpointScheduler):
     def __init__(self, model, checkpoint_a, checkpoint_b):
@@ -130,6 +133,8 @@ class AlternatingScheduler:
         self._step(0)
 
     def _step(self, idx):
+        if idx == self.last_alpha:
+            return
         self.last_alpha = idx
         checkpoint_to_load = self.checkpoints[idx]
         self.model.load_state_dict(checkpoint_to_load)
@@ -141,6 +146,21 @@ class AlternatingScheduler:
     @property
     def alpha(self):
         return self.counter % len(self.checkpoints)
+    
+    def state_dict(self):
+        return {
+            'counter': self.counter,
+            'last_alpha': self.last_alpha,
+            'checkpoints_count': len(self.checkpoints),
+        }
+
+    def load_state_dict(self, state_dict):
+        self.counter = state_dict['counter']
+        self.last_alpha = state_dict['last_alpha']
+        assert state_dict['checkpoints_count'] == len(self.checkpoints), 'Checkpoints count mismatch'
+    
+    def zero_grad(self):
+        pass
 
 
 class RandReducingScheduler(CheckpointScheduler):
