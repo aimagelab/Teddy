@@ -7,4 +7,5 @@ wandb
 profiler
 files/checkpoints
 files/datasets
+files/saved_images
 jobs/
