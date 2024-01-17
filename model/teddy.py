@@ -137,7 +137,7 @@ class TeddyGenerator(nn.Module):
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
         x = self.transformer_style_decoder(style_tgt, x)
-        return x
+        return x[:, :style_tokens.size(1)]  # return only style tokens
 
     def forward_gen(self, style_emb, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
@@ -257,8 +257,8 @@ class TeddyDiscriminator(torch.nn.Module):
 
 
 class Teddy(torch.nn.Module):
-    def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width,
-                 gen_expansion_factor, gen_emb_module, gen_emb_shift, dis_patch_width, dis_patch_count, style_patch_width,
+    def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width, gen_expansion_factor,
+                 gen_emb_module, gen_emb_shift, gen_glob_style_tokens, dis_patch_width, dis_patch_count, style_patch_width,
                  style_patch_count, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
@@ -270,7 +270,8 @@ class Teddy(torch.nn.Module):
         freeze(self.style_encoder)
         embedding_module_kwargs = {'charset': charset, 'transforms': UnifontShiftTransform(gen_emb_shift)}
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim, expansion_factor=gen_expansion_factor,
-                                        channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs)
+                                        channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs,
+                                        num_style=gen_glob_style_tokens)
         # self.discriminator = ResnetDiscriminator()
         # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width * dis_patch_count), (img_height, gen_patch_width), dim=dis_dim,
         #                                         expansion_factor=gen_expansion_factor, channels=img_channels)
