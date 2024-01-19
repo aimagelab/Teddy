@@ -14,6 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.nn.functional import pad
 from einops import rearrange
 from datasets import transforms as T
+from datasets.transforms import ToTensor
 
 
 def get_alphabet(labels):
@@ -83,6 +84,7 @@ class Base_dataset(Dataset):
             'style_img': style_img,
             'style_img_len': style_img_len,
             'style_text': style_text,
+            'style_author': author,
             'other_author_img': other_author_img,
             'other_author_img_len': other_author_img_len,
             'multi_author': multi_author,
@@ -135,17 +137,21 @@ class IAM_dataset(Base_dataset):
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
 
-        val_authors_count = round(len(htg_train_authors) * 0.1)
-        val_authors = htg_train_authors[:val_authors_count]
-        train_authors = htg_train_authors[val_authors_count:]
-        assert len(set(train_authors) & set(val_authors)) == 0
-        assert len(set(train_authors) | set(val_authors)) == len(htg_train_authors)
+        htg_test_authors = Path('files/gan.iam.test.gt.filter27.txt').read_text().splitlines()
+        htg_test_authors = sorted({line.split(',')[0] for line in htg_test_authors})
 
-        if nameset == 'train':
-            target_authors = train_authors
-        elif nameset == 'val':
-            target_authors = val_authors
-        else:
+        val_authors_count = round(len(htg_train_authors) * 0.1)
+        htg_val_authors = htg_train_authors[:val_authors_count]
+        htg_train_authors = htg_train_authors[val_authors_count:]
+
+        target_authors = []
+        if 'train' in nameset:
+            target_authors += htg_train_authors
+        if 'val' in nameset:
+            target_authors += htg_val_authors
+        if 'test' in nameset:
+            target_authors += htg_test_authors
+        if len(target_authors) == 0:
             raise ValueError(f'Unknown nameset {nameset}')
 
         self.imgs = [img for img in self.imgs if self.imgs_to_author[img.stem] in target_authors]
@@ -167,6 +173,57 @@ class IAM_dataset(Base_dataset):
 
         if preload:
             self.preload()
+
+
+class IAM_eval_dataset(IAM_dataset):
+    def __init__(self, *args, **kwargs):
+        pre_transform = T.Compose([
+            T.Convert(1),
+            T.ResizeFixedHeight(32),
+            # T.FixedCharWidth(16),
+            T.ToTensor(),
+            T.PadNextDivisible(16),
+            T.Normalize((0.5,), (0.5,))
+        ])
+        post_transform = lambda x: x
+        kwargs['transform'] = (pre_transform, post_transform)
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, idx):
+        style_img_path = self.imgs[idx]
+        style_text = self.imgs_to_label[style_img_path.stem]
+        style_img = Image.open(style_img_path) if not self.preloaded else self.imgs_preloaded[idx]
+
+        author = self.imgs_to_author[style_img_path.stem]
+        same_author_imgs = self.author_to_imgs[author] - {style_img_path}
+        
+        if len(same_author_imgs) == 0:
+            same_author_img_path = style_img_path
+        else:
+            same_author_img_path = random.choice(list(same_author_imgs))
+
+        same_author_idx = self.imgs_to_idx[same_author_img_path]
+        same_author_text = self.imgs_to_label[same_author_img_path.stem]
+        same_author_img = Image.open(same_author_img_path) if not self.preloaded else self.imgs_preloaded[same_author_idx]
+
+        if self.pre_transform and not self.preloaded:
+            style_img, _ = self.pre_transform((style_img, style_text))
+            same_author_img, _ = self.pre_transform((same_author_img, same_author_text))
+
+        style_img_len = style_img.shape[-1]
+        same_author_img_len = same_author_img.shape[-1]
+
+        sample = {
+            'style_img': style_img,
+            'style_img_len': style_img_len,
+            'style_text': style_text,
+            'style_author': author,
+            'other_author_img': same_author_img,
+            'other_author_img_len': same_author_img_len,
+            'other_author_text': same_author_text,
+            'multi_author': True,
+        }
+        return sample
 
 
 class IAM_custom_dataset(Base_dataset):
@@ -343,8 +400,9 @@ class MergedDataset(Dataset):
         collate_batch['style_imgs'] = pad_images([sample['style_img'] for sample in batch])
         collate_batch['style_imgs_len'] = torch.IntTensor([sample['style_img_len'] for sample in batch])
         collate_batch['style_texts'] = [sample['style_text'] for sample in batch]
-        # collate_batch['same_author_imgs'] = pad_images([sample['same_author_img'] for sample in batch])
-        # collate_batch['same_author_imgs_len'] = torch.IntTensor([sample['same_author_img_len'] for sample in batch])
+        collate_batch['style_authors'] = [sample['style_author'] for sample in batch]
+        if 'other_author_text' in batch[0]:
+            collate_batch['other_author_texts'] = [sample['other_author_text'] for sample in batch]
         collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
         collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
         collate_batch['multi_authors'] = torch.BoolTensor([sample['multi_author'] for sample in batch])
@@ -352,7 +410,6 @@ class MergedDataset(Dataset):
 
 
 def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None, img_channels=3, db_preload=False, **kwargs):
-    assert nameset in {'train', 'val'}, f'Unknown nameset {nameset}'
     pre_transform = T.Compose([
         T.Convert(img_channels),
         T.ResizeFixedHeight(img_height),
@@ -375,6 +432,8 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
+        elif name.lower() == 'iam_lines_eval':
+            datasets_list.append(IAM_eval_dataset(path, dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':
             datasets_list.append(IAM_dataset(path, dataset_type='lines_16', **kwargs))
         elif name.lower() == 'iam_lines_sm':

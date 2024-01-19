@@ -55,10 +55,9 @@ class PadNextDivisible(object):
         img, lbl = sample
         width = img.shape[-1]
         if width % self.divisible == 0:
-            return img
+            return img, lbl
         pad_width = self.divisible - width % self.divisible
-        raise NotImplementedError
-        return F.pad(img, (0, pad_width), value=self.padding_value), lbl
+        return F.pad(img, (0, 0, pad_width, 0), fill=self.padding_value), lbl
 
 
 class Convert(object):
