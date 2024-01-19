@@ -302,6 +302,7 @@ class Msgpack_dataset(Base_dataset):
             self.imgs = [img for img in self.imgs if target_width[img.stem] <= max_width]
 
         self.imgs_set = set(self.imgs)
+        self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         authors = set(self.imgs_to_author.values())
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in authors}
 
@@ -409,24 +410,28 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None, img_channels=3, db_preload=False, **kwargs):
+def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None,
+                    img_channels=3, db_preload=False, pre_transform=None, post_transform=None, **kwargs):
+    
     pre_transform = T.Compose([
         T.Convert(img_channels),
         T.ResizeFixedHeight(img_height),
         T.FixedCharWidth(gen_patch_width),
         T.ToTensor(),
         # PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
-    ])
+    ]) if pre_transform is None else pre_transform
+
     post_transform = T.Compose([
         T.ToPILImage(),
         T.RandomShrink(1., 1., min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
         T.ToTensor(),
         T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
         T.Normalize((0.5,), (0.5,))
-    ])
+    ]) if post_transform is None else post_transform
 
     datasets_list = []
     kwargs = {'max_width': gen_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
+    assert len(datasets) == len(datasets_path), f'Number of datasets and paths must match, got {len(datasets)} datasets and {len(datasets_path)} paths'
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))

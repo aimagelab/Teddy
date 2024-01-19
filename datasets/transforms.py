@@ -58,6 +58,15 @@ class PadNextDivisible(object):
             return img, lbl
         pad_width = self.divisible - width % self.divisible
         return F.pad(img, (0, 0, pad_width, 0), fill=self.padding_value), lbl
+    
+    
+class CropMaxWidth(object):
+    def __init__(self, max_width):
+        self.max_width = max_width
+
+    def __call__(self, sample):
+        img, lbl = sample
+        return img[..., :self.max_width], lbl
 
 
 class Convert(object):
