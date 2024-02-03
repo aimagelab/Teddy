@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
-from train import add_arguments, set_seed, free_mem_percent
+from files.ocr_checkpoints.train import add_arguments, set_seed, free_mem_percent
 from datasets import dataset_factory
 from model.teddy import Teddy
 from torchvision.utils import save_image

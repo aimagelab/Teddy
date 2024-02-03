@@ -6,13 +6,13 @@ from torch import nn
 class ResBlocks(nn.Module):
     def __init__(self, num_blocks, dim, norm, activation, pad_type):
         super(ResBlocks, self).__init__()
-        self.model = []
+        self.modules = []
         for i in range(num_blocks):
-            self.model += [ResBlock(dim,
+            self.modules += [ResBlock(dim,
                                     norm=norm,
                                     activation=activation,
                                     pad_type=pad_type)]
-        self.model = nn.Sequential(*self.model)
+        self.model = nn.Sequential(*self.modules)
 
     def forward(self, x):
         return self.model(x)
@@ -21,16 +21,16 @@ class ResBlocks(nn.Module):
 class ResBlock(nn.Module):
     def __init__(self, dim, norm='in', activation='relu', pad_type='zero'):
         super(ResBlock, self).__init__()
-        model = []
-        model += [Conv2dBlock(dim, dim, 3, 1, 1,
+        self.modules = []
+        self.modules += [Conv2dBlock(dim, dim, 3, 1, 1,
                               norm=norm,
                               activation=activation,
                               pad_type=pad_type)]
-        model += [Conv2dBlock(dim, dim, 3, 1, 1,
+        self.modules += [Conv2dBlock(dim, dim, 3, 1, 1,
                               norm=norm,
                               activation='none',
                               pad_type=pad_type)]
-        self.model = nn.Sequential(*model)
+        self.model = nn.Sequential(*self.modules)
 
     def forward(self, x):
         residual = x

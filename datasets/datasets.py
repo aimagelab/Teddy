@@ -48,47 +48,49 @@ class Base_dataset(Dataset):
         self.author_to_imgs = {}
         self.imgs_set = set()
         self.preloaded = False
+        self.batch_keys = ['style', 'other', 'same']
 
     def __len__(self):
         return len(self.imgs)
-
-    def __getitem__(self, idx):
-        style_img_path = self.imgs[idx]
-        style_text = self.imgs_to_label[style_img_path.stem]
-        style_img = Image.open(style_img_path) if not self.preloaded else self.imgs_preloaded[idx]
-
-        author = self.imgs_to_author[style_img_path.stem]
-        same_author_imgs = self.author_to_imgs[author]
-        other_author_imgs = self.imgs_set - same_author_imgs   # sample from all other authors
-        # other_author_imgs = same_author_imgs - {style_img_path}  # sample from the same author, but not the same image
-
-        multi_author = len(other_author_imgs) > 0
-        other_author_imgs = same_author_imgs if not multi_author else other_author_imgs
-        other_author_img_path = random.choice(list(other_author_imgs))
-        other_author_idx = self.imgs_to_idx[other_author_img_path]
-        other_author_text = self.imgs_to_label[other_author_img_path.stem]
-        other_author_img = Image.open(other_author_img_path) if not self.preloaded else self.imgs_preloaded[other_author_idx]
+    
+    def _get_sample(self, idx, sample=None, tag=None):
+        path = self.imgs[idx]
+        text = self.imgs_to_label[path.stem]
+        img = Image.open(path) if not self.preloaded else self.imgs_preloaded[idx]
 
         if self.pre_transform and not self.preloaded:
-            style_img = self.pre_transform((style_img, style_text))[0]
-            other_author_img = self.pre_transform((other_author_img, other_author_text))[0]
-
+            img, _ = self.pre_transform((img, text))
         if self.post_transform:
-            style_img = self.post_transform((style_img, style_text))[0]
-            other_author_img = self.post_transform((other_author_img, other_author_text))[0]
+            img, _ = self.post_transform((img, text))
 
-        style_img_len = style_img.shape[-1]
-        other_author_img_len = other_author_img.shape[-1]
+        img_len = img.shape[-1]
+        author = self.imgs_to_author[path.stem]
 
-        sample = {
-            'style_img': style_img,
-            'style_img_len': style_img_len,
-            'style_text': style_text,
-            'style_author': author,
-            'other_author_img': other_author_img,
-            'other_author_img_len': other_author_img_len,
-            'multi_author': multi_author,
-        }
+        if sample is not None and tag is not None: 
+            sample[f'{tag}_img'] = img
+            sample[f'{tag}_img_len'] = img_len
+            sample[f'{tag}_text'] = text
+            sample[f'{tag}_author'] = author
+
+        return img, img_len, text, author
+
+    def __getitem__(self, idx):
+        sample = {}
+        *_, style_author = self._get_sample(idx, sample, 'style')
+
+        if 'other' in self.batch_keys or 'same' in self.batch_keys:
+            same_author_imgs = self.author_to_imgs[style_author]
+            other_author_imgs = self.imgs_set - same_author_imgs
+
+            if 'other' in self.batch_keys:
+                path = random.choice(list(other_author_imgs))
+                idx = self.imgs_to_idx[path]
+                self._get_sample(idx, sample, 'other')
+
+            if 'same' in self.batch_keys:
+                path = random.choice(list(same_author_imgs))
+                idx = self.imgs_to_idx[path]
+                self._get_sample(idx, sample, 'same')
         return sample
 
     def load_img_sizes(self, img_sizes_path):
@@ -398,15 +400,20 @@ class MergedDataset(Dataset):
 
     def collate_fn(self, batch):
         collate_batch = {}
-        collate_batch['style_imgs'] = pad_images([sample['style_img'] for sample in batch])
-        collate_batch['style_imgs_len'] = torch.IntTensor([sample['style_img_len'] for sample in batch])
-        collate_batch['style_texts'] = [sample['style_text'] for sample in batch]
-        collate_batch['style_authors'] = [sample['style_author'] for sample in batch]
-        if 'other_author_text' in batch[0]:
-            collate_batch['other_author_texts'] = [sample['other_author_text'] for sample in batch]
-        collate_batch['other_author_imgs'] = pad_images([sample['other_author_img'] for sample in batch])
-        collate_batch['other_author_imgs_len'] = torch.IntTensor([sample['other_author_img_len'] for sample in batch])
-        collate_batch['multi_authors'] = torch.BoolTensor([sample['multi_author'] for sample in batch])
+
+        for key in batch[0].keys():
+            val = batch[0][key]
+            if isinstance(val, torch.Tensor):
+                collate_batch[key] = pad_images([sample[key] for sample in batch])
+            elif isinstance(val, int):
+                collate_batch[key] = torch.IntTensor([sample[key] for sample in batch])
+            elif isinstance(val, float):
+                collate_batch[key] = torch.FloatTensor([sample[key] for sample in batch])
+            elif isinstance(val, bool):
+                collate_batch[key] = torch.BoolTensor([sample[key] for sample in batch])
+            else:
+                collate_batch[key] = [sample[key] for sample in batch]
+
         return collate_batch
 
 
@@ -416,16 +423,17 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
     pre_transform = T.Compose([
         T.Convert(img_channels),
         T.ResizeFixedHeight(img_height),
-        T.FixedCharWidth(gen_patch_width),
-        T.ToTensor(),
-        # PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
+        # T.FixedCharWidth(gen_patch_width),
+        # T.ToTensor(),
+        # T.PadNextDivisible(gen_patch_width),  # pad to next divisible of 16 (skip if already divisible)
     ]) if pre_transform is None else pre_transform
 
     post_transform = T.Compose([
-        T.ToPILImage(),
-        T.RandomShrink(1., 1., min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
+        # T.ToPILImage(),
+        T.RandomShrink(0.8, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
         T.ToTensor(),
-        T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
+        T.MedianRemove(),
+        # T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
         T.Normalize((0.5,), (0.5,))
     ]) if post_transform is None else post_transform
 

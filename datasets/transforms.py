@@ -44,6 +44,16 @@ class RandomShrink(object):
         assert img.size[0] >= self.min_width, f'{img.size[0]} < {self.min_width}'
         assert img.size[0] <= self.max_width, f'{img.size[0]} > {self.max_width}'
         return img, lbl
+    
+
+class MedianRemove(object):
+    def __call__(self, sample):
+        img, lbl = sample
+        c, *_ = img.shape
+        median_values = img.view(c, -1).median(-1)[0]
+        img = img + (1 - median_values) * random.random()
+        img = img.clamp(0, 1)
+        return img, lbl
 
 
 class PadNextDivisible(object):

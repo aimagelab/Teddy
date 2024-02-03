@@ -46,9 +46,6 @@ def gather_collectors(collector):
 def train(rank, args):
     device = torch.device(rank)
 
-    if args.ddp:
-        setup(rank, args.world_size)
-
     dataset = dataset_factory('train', **args.__dict__)
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=True)
@@ -60,13 +57,14 @@ def train(rank, args):
     assert ocr_checkpoint_a['charset'] == ocr_checkpoint_b['charset'], "OCR checkpoints must have the same charset"
 
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
-    teddy_ddp = DDP(teddy, device_ids=[rank], find_unused_parameters=True) if args.ddp else teddy
+    # vae_checkpoint = torch.load(args.vae_checkpoint, map_location=device)
+    # teddy.generator.vae.load_state_dict(vae_checkpoint['model'])
 
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
-    scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
+    # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
 
     optimizer_gen = torch.optim.AdamW(teddy.generator.parameters(), lr=args.lr_gen)
-    scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
+    # scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
 
     match args.ocr_scheduler:
         case 'train': optimizer_ocr = torch.optim.AdamW(teddy.ocr.parameters(), lr=0.0001)
@@ -87,8 +85,8 @@ def train(rank, args):
         teddy.load_state_dict(checkpoint['model'])
         optimizer_dis.load_state_dict(checkpoint['optimizer_dis'])
         optimizer_gen.load_state_dict(checkpoint['optimizer_gen'])
-        scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
-        scheduler_gen.load_state_dict(checkpoint['scheduler_gen'])
+        # scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
+        # scheduler_gen.load_state_dict(checkpoint['scheduler_gen'])
         args.start_epochs = int(last_checkpoint.name.split('_')[0]) + 1
         optimizer_ocr.load_state_dict(checkpoint['optimizer_ocr'])
 
@@ -123,9 +121,9 @@ def train(rank, args):
                 clock.stop()  # time/data_load
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                batch['gen_texts'] = text_generator.sample(len(batch['style_imgs']))
+                batch['gen_text'] = text_generator.sample(len(batch['style_img']))
 
-                preds = teddy_ddp(batch)
+                preds = teddy(batch)
 
                 # Discriminator loss
                 if idx % args.dis_critic_num == 0:
@@ -196,31 +194,31 @@ def train(rank, args):
         epoch_start_time = time.time()
         if args.wandb and rank == 0:
             with torch.inference_mode():
-                fakes = rearrange(preds['fakes'], 'b e c h w -> (b e) c h w')
-                img_grid = make_grid(fakes, nrow=1, normalize=True, value_range=(-1, 1))
+                img_grid = make_grid(preds['fakes'], nrow=1, normalize=True, value_range=(-1, 1))
 
-                fake = fakes[0].detach().cpu().permute(1, 2, 0).numpy()
+                fake = preds['fakes'][0].detach().cpu().permute(1, 2, 0).numpy()
                 fake_pred = teddy.text_converter.decode_batch(preds['ocr_fake_pred'])[0]
-                fake_gt = batch['gen_texts'][0]
+                fake_gt = batch['gen_text'][0]
 
                 if not batch['ocr_real_train']: 
                     preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
                     preds['ocr_real_pred'] = preds['ocr_real_pred'].permute(1, 0, 2).log_softmax(2)
                     ocr_loss_real = ctc_criterion(preds['ocr_real_pred'], preds['enc_style_text'], preds_size, preds['enc_style_text_len'])
 
-                real = batch['style_imgs'][0].detach().cpu().permute(1, 2, 0).numpy()
+                real = batch['style_img'][0].detach().cpu().permute(1, 2, 0).numpy()
                 real_pred = teddy.text_converter.decode_batch(preds['ocr_real_pred'])[0]
-                real_gt = batch['style_texts'][0]
+                real_gt = batch['style_text'][0]
 
-                style_imgs = make_grid(batch['style_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
+                style_img = make_grid(batch['style_img'], nrow=1, normalize=True, value_range=(-1, 1))
                 # same_author_imgs = make_grid(batch['same_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
                 # other_author_imgs = make_grid(batch['other_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
 
-                eval_page = teddy.generate_eval_page(batch['gen_texts'], batch['style_texts'], batch['style_imgs'])
+                eval_page = teddy.generate_eval_page(batch['gen_text'], batch['style_text'], batch['style_img'])
 
             collector['time/epoch_inference'] = time.time() - epoch_start_time
             collector['ocr_loss_real'] = ocr_loss_real
-        collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
+        # collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
+        collector['lr_dis', 'lr_gen'] = args.lr_dis, args.lr_gen
         collector += teddy.collector
         # if args.ddp:
         #     collector = gather_collectors(collector)
@@ -230,7 +228,7 @@ def train(rank, args):
             wandb.log({
                 'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
                 'epoch': epoch,
-                'images/all': [wandb.Image(torch.cat([style_imgs, img_grid], dim=2), caption='real/fake')],
+                'images/all': [wandb.Image(torch.cat([style_img, img_grid], dim=2), caption='real/fake')],
                 'images/page': [wandb.Image(eval_page, caption='eval')],
                 'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
@@ -243,8 +241,8 @@ def train(rank, args):
                 'model': teddy.state_dict(),
                 'optimizer_dis': optimizer_dis.state_dict(),
                 'optimizer_gen': optimizer_gen.state_dict(),
-                'scheduler_dis': scheduler_dis.state_dict(),
-                'scheduler_gen': scheduler_gen.state_dict(),
+                # 'scheduler_dis': scheduler_dis.state_dict(),
+                # 'scheduler_gen': scheduler_gen.state_dict(),
                 'optimizer_ocr': optimizer_ocr.state_dict(),
                 'args': vars(args),
             }, dst)
@@ -252,8 +250,8 @@ def train(rank, args):
         collector.reset()
         teddy.collector.reset()
 
-        scheduler_dis.step()
-        scheduler_gen.step()
+        # scheduler_dis.step()
+        # scheduler_gen.step()
     cleanup()
 
 
@@ -313,10 +311,10 @@ def add_arguments(parser):
     parser.add_argument('--ddp', action='store_true', help="Use DDP")
     parser.add_argument('--clip_grad_norm', type=float, default=-1, help="Clip grad norm")
 
-    # Teddy ocr
-    parser.add_argument('--ocr_checkpoint_a', type=Path, default='files/f745_all_datasets/0345000_iter.pth', help="OCR checkpoint a")
-    parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/0ea8_all_datasets/0345000_iter.pth', help="OCR checkpoint b")
-    parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/0259_all_datasets/0355000_iter.pth', help="OCR checkpoint c")
+    # Teddy ocr  files/ocr_checkpoints/0ea8_ocr_b.pth
+    parser.add_argument('--ocr_checkpoint_a', type=Path, default='files/ocr_checkpoints/f745_ocr_a.pth', help="OCR checkpoint a")
+    parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/ocr_checkpoints/0ea8_ocr_b.pth', help="OCR checkpoint b")
+    parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/ocr_checkpoints/0259_ocr_c.pth', help="OCR checkpoint c")
     parser.add_argument('--ocr_scheduler', type=str, default='alt3', help="OCR scheduler")
 
     # Teddy loss
@@ -336,6 +334,11 @@ def add_arguments(parser):
     parser.add_argument('--gen_emb_module', type=str, default='UnifontModule', help="Embedding module")
     parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
     parser.add_argument('--gen_glob_style_tokens', type=int, default=3, help="Text line len")
+
+    # Teddy vae
+    parser.add_argument('--vae_dim', type=int, default=512, help="Model dimension")
+    parser.add_argument('--vae_channels', type=int, default=16, help="Patch width")
+    parser.add_argument('--vae_checkpoint', type=str, default='files/vae_checkpoints/fe26_vae.pth', help="VAE checkpoint")
 
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")

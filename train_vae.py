@@ -51,14 +51,20 @@ def train(rank, args):
     args.pre_transform = T.Compose([
         T.Convert(args.img_channels),
         T.ResizeFixedHeight(args.img_height),
+        T.RandomShrink(0.8, 2.0, min_width=192, max_width=2048, snap_to=16),
         T.ToTensor(),
-        T.CropMaxWidth(args.img_max_width),
-        T.PadNextDivisible(8),
+        T.MedianRemove(),
+        T.PadNextDivisible(16),
         T.Normalize((0.5,), (0.5,)),
     ])
     args.post_transform = lambda x: x
 
     dataset = dataset_factory('train', **args.__dict__)
+
+    for d in dataset.datasets:
+        d.batch_keys = ['style']
+
+    print()
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=True)
     loader = ChunkLoader(loader, args.epochs_size)
@@ -92,11 +98,16 @@ def train(rank, args):
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 clock.stop()  # time/data_load
 
-                imgs = batch['style_imgs'].to(device)
+                imgs = batch['style_img'].to(device)
                 preds = vae(imgs)
 
                 loss_mse = mse_criterion(preds, imgs)
-                collector['loss_mse'] = loss_mse
+
+                if torch.isnan(loss_mse):
+                    print("loss_mse is NaN")
+                    print(f'Epoch {epoch} | {idx} | {loss_mse} | {preds.shape} | {imgs.shape} | {imgs.min()} | {imgs.max()} | {preds.min()} | {preds.max()}')
+                else:
+                    collector['loss_mse'] = loss_mse
 
                 clock.start()  # time/data_load
 
@@ -163,7 +174,7 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     
 
 def add_arguments(parser):
-    parser.add_argument('--lr_vae', type=float, default=0.0001)
+    parser.add_argument('--lr_vae', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
@@ -208,7 +219,7 @@ def add_arguments(parser):
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
 
     # VAE
-    parser.add_argument('--latent_dim', type=int, default=512, help="Image channels")
+    parser.add_argument('--latent_dim', type=int, default=64, help="Image channels")
     parser.add_argument('--img_channels', type=int, default=1, help="Image channels")
     parser.add_argument('--img_height', type=int, default=32, help="Image height")
     parser.add_argument('--img_max_width', type=int, default=1000, help="Image height")
