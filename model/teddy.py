@@ -76,13 +76,13 @@ class PositionalEncoding(nn.Module):
 
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[:, :x.size(1)]
         return x
 
 
@@ -137,7 +137,7 @@ class TeddyGenerator(nn.Module):
         x = self.transformer_encoder(x)
 
         style_tgt = self.style_embedding(style_tgt)
-        # style_tgt = self.pos_encoding(style_tgt)
+        style_tgt = self.pos_encoding(style_tgt)
 
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
@@ -146,7 +146,7 @@ class TeddyGenerator(nn.Module):
 
     def forward_gen(self, style_emb, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
-        # gen_tgt = self.pos_encoding(gen_tgt)
+        gen_tgt = self.pos_encoding(gen_tgt)
 
         x = self.transformer_gen_decoder(gen_tgt, style_emb)
         # x = self.vae.sample(x)
