@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
-from files.ocr_checkpoints.train import add_arguments, set_seed, free_mem_percent
+from train import add_arguments, set_seed, free_mem_percent
 from datasets import dataset_factory
 from model.teddy import Teddy
 from torchvision.utils import save_image
 from tqdm import tqdm
 from util.functional import ChunkLoader
+
 
 @torch.no_grad()
 def generate_images(rank, args):
@@ -42,13 +43,12 @@ def generate_images(rank, args):
     for idx, batch in enumerate(tqdm(loader, desc='Generating images')):
         try:
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-            batch['gen_texts'] = batch['style_texts']
+            batch['gen_text'] = batch['style_text']
 
-            fakes = teddy.generate(batch['gen_texts'], batch['other_author_texts'], batch['other_author_imgs'])
+            fakes = teddy.generate(batch['gen_text'], batch['other_author_text'], batch['other_author_img'])
 
-            zip_args = [fakes, batch['style_imgs'], batch['style_imgs_len'], batch['gen_texts'], batch['style_authors']]
+            zip_args = [fakes, batch['style_img'], batch['style_img_len'], batch['gen_text'], batch['style_author']]
             for d, (fake, real, width, txt, author) in enumerate(zip(*zip_args)):
-                fake = fake.squeeze(0)
                 fake = fake[:, :, :16 * len(txt)]
                 real = real[:, :, :width]
                 fake_dst = fakes_path / author / f'{idx * len(fakes) + d:06d}.png'
@@ -70,12 +70,10 @@ if __name__ == '__main__':
     args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
     args.checkpoint_path = Path(args.checkpoint_path, args.run_id)
 
-    for i in range(10, 500, 10):
-        args.start_epochs = i
-        set_seed(args.seed)
+    set_seed(args.seed)
 
-        assert torch.cuda.is_available(), "You need a GPU to train Teddy"
-        if args.device == 'auto':
-            args.device = f'cuda:{np.argmax(free_mem_percent())}'
+    assert torch.cuda.is_available(), "You need a GPU to train Teddy"
+    if args.device == 'auto':
+        args.device = f'cuda:{np.argmax(free_mem_percent())}'
 
-        generate_images(args.device, args)
+    generate_images(args.device, args)
