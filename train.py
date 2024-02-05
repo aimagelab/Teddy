@@ -121,7 +121,8 @@ def train(rank, args):
                 clock.stop()  # time/data_load
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                batch['gen_text'] = text_generator.sample(len(batch['style_img']))
+                gen_text = text_generator.sample(len(batch['style_img']))
+                batch['gen_text'] = [g if random.random() > 0.3 else s for s, g in zip(batch['style_text'], gen_text)]
 
                 preds = teddy(batch)
 
