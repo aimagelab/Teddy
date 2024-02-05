@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
-from files.ocr_checkpoints.train import add_arguments, set_seed, free_mem_percent
+from train import add_arguments, set_seed, free_mem_percent
 from datasets import dataset_factory
 from model.teddy import Teddy
 from torchvision.utils import save_image
@@ -69,7 +69,7 @@ def compute_attention(rank, args):
     else:
         raise ValueError(f"Checkpoint path {args.checkpoint_path} does not exist")
 
-    for checkpoint_path in sorted(args.checkpoint_path.glob('*_epochs.pth')):
+    for checkpoint_path in sorted(args.checkpoint_path.glob('*_epochs.pth'), reverse=True):
         checkpoint = torch.load(checkpoint_path)
         teddy.load_state_dict(checkpoint['model'])
         args.start_epochs = checkpoint_path.name.split('_')[0]
@@ -86,17 +86,17 @@ def compute_attention(rank, args):
                 try:
                     batch = dataset.collate_fn([sample])
                     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                    batch['gen_texts'] = gen_texts
+                    batch['gen_text'] = gen_texts
 
-                    fakes = teddy.generate(batch['gen_texts'], batch['style_texts'], batch['style_imgs'])
+                    fakes = teddy.generate(batch['gen_text'], batch['style_text'], batch['style_img'])
 
                     attention_maps = []
                     for layer in teddy.generator.transformer_gen_decoder.layers:
                         attention_maps.append(layer.attention_map.detach().cpu())
                     attention_maps = torch.cat(attention_maps, dim=1).squeeze(0)
 
-                    glob_style_tokens = [f'g{i}' for i in range(attention_maps.shape[1] - len(batch['style_texts'][0]))]
-                    characters = glob_style_tokens + list(batch['style_texts'][0])
+                    glob_style_tokens = [f'g{i}' for i in range(attention_maps.shape[1] - len(batch['style_text'][0]))]
+                    characters = glob_style_tokens + list(batch['style_text'][0])
                     attention_maps = attention_maps.mean(dim=0)
                     for i, c in enumerate(characters):
                         char_weights_dict[c].append(attention_maps[i].item())
