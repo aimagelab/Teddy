@@ -121,7 +121,8 @@ def train(rank, args):
                 clock.stop()  # time/data_load
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                batch['gen_text'] = text_generator.sample(len(batch['style_img']))
+                gen_text = text_generator.sample(len(batch['style_img']))
+                batch['gen_text'] = [g if random.random() > args.gen_same_text_ratio else s for s, g in zip(batch['style_text'], gen_text)]
 
                 preds = teddy(batch)
 
@@ -331,6 +332,7 @@ def add_arguments(parser):
     parser.add_argument('--gen_patch_width', type=int, default=16, help="Patch width")
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
     parser.add_argument('--gen_text_line_len', type=int, default=24, help="Text line len")
+    parser.add_argument('--gen_same_text_ratio', type=float, default=0.3, help="Same text ratio")
     parser.add_argument('--gen_emb_module', type=str, default='UnifontModule', help="Embedding module")
     parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
     parser.add_argument('--gen_glob_style_tokens', type=int, default=3, help="Text line len")
