@@ -146,7 +146,7 @@ class TeddyGenerator(nn.Module):
 
     def forward_gen(self, style_emb, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
-        gen_tgt = self.pos_encoding(gen_tgt)
+        # gen_tgt = self.pos_encoding(gen_tgt)
 
         x = self.transformer_gen_decoder(gen_tgt, style_emb)
         # x = self.vae.sample(x)
@@ -300,22 +300,28 @@ class Teddy(torch.nn.Module):
         dis_glob_real_pred = self.discriminator(batch['style_img'])
         dis_glob_fake_pred = self.discriminator(fakes)
 
+        # style_text_len = torch.tensor([len(t) for t in batch['style_text']], device=device) 
+        # gen_img_len = torch.clamp(batch['style_img_len'] / style_text_len, 0, 16) * enc_gen_text_len
+        # gen_img_len = ((gen_img_len / 16).ceil() * 16).int()
+
+        gen_img_len = enc_gen_text_len * 16
+
         real_samples = self.dis_patch_sampler(batch['style_img'], img_len=batch['style_img_len'])
-        fake_samples = self.dis_patch_sampler(fakes, img_len=enc_gen_text_len * 16)
+        fake_samples = self.dis_patch_sampler(fakes, img_len=gen_img_len)
         dis_local_real_pred = self.discriminator(real_samples)
         dis_local_fake_pred = self.discriminator(fake_samples)
 
-        fakes_whole = repeat(fakes, 'b 1 h w -> b 3 h w')
-        real_whole = repeat(batch['style_img'], 'b 1 h w -> b 3 h w')
-        other_whole = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
+        fakes_rgb = repeat(fakes, 'b 1 h w -> b 3 h w')
+        real_rgb = repeat(batch['style_img'], 'b 1 h w -> b 3 h w')
+        other_rgb = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
 
-        style_glob_fakes = self.style_encoder(fakes_whole)
-        style_glob_negative = self.style_encoder(other_whole)
-        style_glob_positive = self.style_encoder(real_whole)
+        style_glob_fakes = self.style_encoder(fakes_rgb)
+        style_glob_negative = self.style_encoder(other_rgb)
+        style_glob_positive = self.style_encoder(real_rgb)
 
-        real_samples = self.style_patch_sampler(real_whole, img_len=batch['style_img_len'])
-        fake_samples = self.style_patch_sampler(fakes_whole, img_len=enc_gen_text_len * 16)
-        other_samples = self.style_patch_sampler(other_whole, img_len=batch['other_img_len'])
+        real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
+        fake_samples = self.style_patch_sampler(fakes_rgb, img_len=gen_img_len)
+        other_samples = self.style_patch_sampler(other_rgb, img_len=batch['other_img_len'])
 
         style_local_real = self.style_encoder(real_samples)
         style_local_fakes = self.style_encoder(fake_samples)
@@ -325,14 +331,20 @@ class Teddy(torch.nn.Module):
         appea_local_fakes = self.apperence_encoder(fake_samples)
         appea_local_other = self.apperence_encoder(other_samples)
 
-        ocr_fake_pred = self.ocr(fakes_whole)
+        # TODO find a better way to pad the generated images
+        # mask = torch.ones_like(fakes_rgb)
+        # for i, l in enumerate(gen_img_len):
+        #     mask[i, :, :, l:] = 0
+        # masked_fakes_rgb = (fakes_rgb - 1) * mask + 1
+
+        ocr_fake_pred = self.ocr(fakes_rgb)
 
         ocr_real_pred = None
         if 'ocr_real_train' in batch and batch['ocr_real_train']:
-            ocr_real_pred = self.ocr(real_whole)
+            ocr_real_pred = self.ocr(real_rgb)
         elif 'ocr_real_eval' in batch and batch['ocr_real_eval']:
             with torch.inference_mode():
-                ocr_real_pred = self.ocr(real_whole)
+                ocr_real_pred = self.ocr(real_rgb)
 
         results = {
             'fakes': fakes,

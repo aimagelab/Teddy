@@ -332,7 +332,7 @@ def add_arguments(parser):
     parser.add_argument('--gen_patch_width', type=int, default=16, help="Patch width")
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
     parser.add_argument('--gen_text_line_len', type=int, default=24, help="Text line len")
-    parser.add_argument('--gen_same_text_ratio', type=float, default=0.3, help="Same text ratio")
+    parser.add_argument('--gen_same_text_ratio', type=float, default=0.5, help="Same text ratio")
     parser.add_argument('--gen_emb_module', type=str, default='UnifontModule', help="Embedding module")
     parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
     parser.add_argument('--gen_glob_style_tokens', type=int, default=3, help="Text line len")

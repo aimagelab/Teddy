@@ -33,10 +33,12 @@ class VariationalEncoder(nn.Module):
     
 
 class VariationalDecoder(nn.Module):
-    def __init__(self, ups=3, n_res=2, dim=512, out_dim=1, res_norm='in', activ='relu', pad_type='reflect'):
+    def __init__(self, ups=3, n_res=2, in_dim=512, dim=512, out_dim=1, height=4, width=2, res_norm='in', activ='relu', pad_type='reflect'):
         super(VariationalDecoder, self).__init__()
 
-        self.fc = nn.LazyLinear(dim * 8)
+        self.height = height
+        self.width = width
+        self.fc = nn.Linear(in_dim, dim * height * width)
         self.modules = []
         self.modules.append(ResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type))
         for _ in range(ups):
@@ -48,7 +50,7 @@ class VariationalDecoder(nn.Module):
 
     def forward(self, x):
         x = self.fc(x)
-        x = rearrange(x, 'b l (c w h) -> b c h (l w)', h=4, w=2)
+        x = rearrange(x, 'b l (c w h) -> b c h (l w)', h=self.height, w=self.width)
         x = self.model(x)
         return x
     
@@ -57,7 +59,7 @@ class VariationalAutoencoder(nn.Module):
     def __init__(self, latent_dims, channels=1):
         super(VariationalAutoencoder, self).__init__()
         self.encoder = VariationalEncoder(dim=latent_dims, in_dim=channels)
-        self.decoder = VariationalDecoder(dim=latent_dims, out_dim=channels)
+        self.decoder = VariationalDecoder(in_dim=latent_dims, out_dim=channels)
         
         self.mu_linear = nn.Linear(latent_dims, latent_dims)
         self.sigma_linear = nn.Linear(latent_dims, latent_dims)
