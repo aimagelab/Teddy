@@ -35,10 +35,10 @@ class VariationalEncoder(nn.Module):
 class VariationalDecoder(nn.Module):
     def __init__(self, ups=3, n_res=2, in_dim=512, dim=512, out_dim=1, height=4, width=2, res_norm='in', activ='relu', pad_type='reflect'):
         super(VariationalDecoder, self).__init__()
-
         self.height = height
         self.width = width
         self.fc = nn.Linear(in_dim, dim * height * width)
+        
         self.modules = []
         self.modules.append(ResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type))
         for _ in range(ups):

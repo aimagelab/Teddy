@@ -68,10 +68,30 @@ class CTCLabelConverter(nn.Module):
         preds_size = preds.size(1) - (np.flip(preds_index, 1) > 0).argmax(-1)
         preds_size = np.where(preds_size < preds.size(1), preds_size, 0)
         return self.decode(preds_index, preds_size)
+    
+
+class ConvTransformerDecoderLayer(nn.TransformerDecoderLayer):
+    def __init__(self, kernel_size, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.linear1 = self._linear_to_conv(kernel_size, self.linear1)
+        self.linear2 = self._linear_to_conv(kernel_size, self.linear2)
+
+    @staticmethod
+    def _linear_to_conv(kernel_size, linear):
+        return nn.Sequential(
+            Rearrange('b l c -> b c l'),
+            nn.Conv1d(linear.in_features, linear.out_features, kernel_size, padding=kernel_size // 2),
+            Rearrange('b c l -> b l c')
+        )
+    
+
+class NoCrossTransformerDecoderLayer(nn.TransformerDecoderLayer):
+    def _mha_block(self, x, *args, **kwargs):
+        return x      
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, max_len: int = 5000):
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=256):
         super().__init__()
 
         position = torch.arange(max_len).unsqueeze(1)
@@ -83,6 +103,17 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         x = x + self.pe[:, :x.size(1)]
+        return x
+    
+
+class LearnedPositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=256):
+        super().__init__()
+        self.positional_embedding = nn.Parameter(torch.randn(1, max_len, d_model))
+
+    def forward(self, x):
+        assert x.size(1) <= self.positional_embedding.size(1), f'Input sequence length {x.size(1)} is greater than the maximum positional embedding length {self.positional_embedding.size(1)}'
+        x = x + self.positional_embedding[:, :x.size(1)]
         return x
 
 
@@ -106,7 +137,10 @@ class TeddyGenerator(nn.Module):
             nn.LayerNorm(dim),
         )
 
-        self.pos_encoding = PositionalEncoding(dim)
+        self.img_pos_encoding = SinusoidalPositionalEncoding(dim)
+        self.style_pos_encoding = self.img_pos_encoding
+        self.gen_pos_encoding = self.img_pos_encoding
+
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
 
         assert embedding_module in globals(), f'Embedding module {embedding_module} not found.'
@@ -117,6 +151,8 @@ class TeddyGenerator(nn.Module):
 
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
         transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
+        # transformer_decoder_layer = ConvTransformerDecoderLayer(3, d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
+        # transformer_decoder_layer = NoCrossTransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
 
         encoder_norm = nn.LayerNorm(dim)
         decoder_norm = nn.LayerNorm(dim)
@@ -133,11 +169,11 @@ class TeddyGenerator(nn.Module):
         x = self.to_patch_embedding(style_img)
         b, n, _ = x.shape
 
-        x = self.pos_encoding(x)
+        x = self.img_pos_encoding(x)
         x = self.transformer_encoder(x)
 
         style_tgt = self.style_embedding(style_tgt)
-        style_tgt = self.pos_encoding(style_tgt)
+        style_tgt = self.style_pos_encoding(style_tgt)
 
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
@@ -146,7 +182,7 @@ class TeddyGenerator(nn.Module):
 
     def forward_gen(self, style_emb, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
-        # gen_tgt = self.pos_encoding(gen_tgt)
+        gen_tgt = self.gen_pos_encoding(gen_tgt)
 
         x = self.transformer_gen_decoder(gen_tgt, style_emb)
         # x = self.vae.sample(x)
@@ -230,8 +266,8 @@ class PatchSampler:
     def __call__(self, img, img_len=None):
         b, c, h, w = img.shape
         if w < self.patch_width:
-            pad_width = self.patch_width - w
-            img = torch.nn.functional.pad(img, (0, pad_width), value=1)
+            img_len = torch.clamp_min(img_len, self.patch_width)
+            img = torch.nn.functional.pad(img, (0, self.patch_width - w), value=1)
             b, c, h, w = img.shape
 
         device = img.device
@@ -305,6 +341,7 @@ class Teddy(torch.nn.Module):
         # gen_img_len = ((gen_img_len / 16).ceil() * 16).int()
 
         gen_img_len = enc_gen_text_len * 16
+        # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * 16
 
         real_samples = self.dis_patch_sampler(batch['style_img'], img_len=batch['style_img_len'])
         fake_samples = self.dis_patch_sampler(fakes, img_len=gen_img_len)

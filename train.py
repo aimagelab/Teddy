@@ -9,6 +9,7 @@ import wandb
 import time
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import warnings
 
 from pathlib import Path
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -82,7 +83,13 @@ def train(rank, args):
     if args.resume and args.checkpoint_path.exists() and len(list(args.checkpoint_path.glob('*_epochs.pth'))) > 0:
         last_checkpoint = sorted(args.checkpoint_path.glob('*_epochs.pth'))[-1]
         checkpoint = torch.load(last_checkpoint)
-        teddy.load_state_dict(checkpoint['model'])
+        missing, unexpeted = teddy.load_state_dict(checkpoint['model'], strict=False)
+        if len(keys := missing + unexpeted) > 0:
+            if sum([not 'pos_encoding' in k for k in missing + unexpeted]) > 0:
+                raise ValueError(f"Model not loaded: {keys}")
+            if sum(['pos_encoding' in k for k in missing + unexpeted]) > 0:
+                warnings.warn(f"Pos encoding not loaded: {keys}")
+                
         optimizer_dis.load_state_dict(checkpoint['optimizer_dis'])
         optimizer_gen.load_state_dict(checkpoint['optimizer_gen'])
         # scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
@@ -235,7 +242,7 @@ def train(rank, args):
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
             } | collector.dict())
 
-        if rank == 0 and epoch % 10 == 0 and not args.dryrun:
+        if rank == 0 and epoch % 10 == 0 and epoch > 0 and not args.dryrun:
             dst = args.checkpoint_path / f'{epoch:06d}_epochs.pth'
             dst.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
