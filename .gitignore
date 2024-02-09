@@ -1,11 +1,14 @@
-*.pyc
 .vscode
+*.pyc
 *.pth
-test_sampled_text
 *.png
+*.pkl
+*.zip
+test_sampled_text
 wandb
 profiler
 files/checkpoints
 files/datasets
 files/saved_images
+files/iam_htg_setting.json.gz
 jobs/

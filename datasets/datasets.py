@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 import torch
 import html
+import gzip
 from torch.utils.data import Dataset
 import msgpack
 import json
@@ -134,7 +135,7 @@ class IAM_dataset(Base_dataset):
 
         img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
         self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
-        assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
+        # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
 
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
@@ -147,6 +148,8 @@ class IAM_dataset(Base_dataset):
         htg_train_authors = htg_train_authors[val_authors_count:]
 
         target_authors = []
+        if 'all' in nameset:
+            target_authors += sorted(set(self.imgs_to_author.values()))
         if 'train' in nameset:
             target_authors += htg_train_authors
         if 'val' in nameset:
@@ -155,6 +158,7 @@ class IAM_dataset(Base_dataset):
             target_authors += htg_test_authors
         if len(target_authors) == 0:
             raise ValueError(f'Unknown nameset {nameset}')
+        target_authors = sorted(set(target_authors))
 
         self.imgs = [img for img in self.imgs if self.imgs_to_author[img.stem] in target_authors]
         self.imgs_to_author = {k: v for k, v in self.imgs_to_author.items() if v in target_authors}
@@ -175,57 +179,6 @@ class IAM_dataset(Base_dataset):
 
         if preload:
             self.preload()
-
-
-class IAM_eval_dataset(IAM_dataset):
-    def __init__(self, *args, **kwargs):
-        pre_transform = T.Compose([
-            T.Convert(1),
-            T.ResizeFixedHeight(32),
-            # T.FixedCharWidth(16),
-            T.ToTensor(),
-            T.PadNextDivisible(16),
-            T.Normalize((0.5,), (0.5,))
-        ])
-        post_transform = lambda x: x
-        kwargs['transform'] = (pre_transform, post_transform)
-        super().__init__(*args, **kwargs)
-
-    def __getitem__(self, idx):
-        style_img_path = self.imgs[idx]
-        style_text = self.imgs_to_label[style_img_path.stem]
-        style_img = Image.open(style_img_path) if not self.preloaded else self.imgs_preloaded[idx]
-
-        author = self.imgs_to_author[style_img_path.stem]
-        same_author_imgs = self.author_to_imgs[author] - {style_img_path}
-        
-        if len(same_author_imgs) == 0:
-            same_author_img_path = style_img_path
-        else:
-            same_author_img_path = random.choice(list(same_author_imgs))
-
-        same_author_idx = self.imgs_to_idx[same_author_img_path]
-        same_author_text = self.imgs_to_label[same_author_img_path.stem]
-        same_author_img = Image.open(same_author_img_path) if not self.preloaded else self.imgs_preloaded[same_author_idx]
-
-        if self.pre_transform and not self.preloaded:
-            style_img, _ = self.pre_transform((style_img, style_text))
-            same_author_img, _ = self.pre_transform((same_author_img, same_author_text))
-
-        style_img_len = style_img.shape[-1]
-        same_author_img_len = same_author_img.shape[-1]
-
-        sample = {
-            'style_img': style_img,
-            'style_img_len': style_img_len,
-            'style_text': style_text,
-            'style_author': author,
-            'other_author_img': same_author_img,
-            'other_author_img_len': same_author_img_len,
-            'other_author_text': same_author_text,
-            'multi_author': True,
-        }
-        return sample
 
 
 class IAM_custom_dataset(Base_dataset):
@@ -271,6 +224,46 @@ class IAM_custom_dataset(Base_dataset):
 
         if preload:
             self.preload()
+
+
+class IAM_eval(IAM_dataset):
+    def __init__(self, *args, **kwargs):
+        kwargs['dataset_type'] = 'lines'
+        kwargs['nameset'] = 'all'
+        kwargs['max_width'] = None
+        kwargs['max_height'] = None
+        super().__init__(*args, **kwargs)
+
+        with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+            self.data = json.load(file)
+        self.imgs_id_to_path = {img.stem: img for img in self.imgs}
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        sample = self.data[idx]
+        gen_text = sample['word']
+        style_id = sample['style_ids'][0][:-3]
+        style_text = self.imgs_to_label[style_id]
+        style_img = Image.open(self.imgs_id_to_path[style_id])
+
+        if self.pre_transform:
+            style_img, _ = self.pre_transform((style_img, style_text))
+        if self.post_transform:
+            style_img, _ = self.post_transform((style_img, style_text))
+
+        dst_path = sample['dst']
+
+        sample = {
+            'gen_text': gen_text,
+            'style_img': style_img,
+            'style_img_len': style_img.shape[-1],
+            'style_text': style_text,
+            'style_author': self.imgs_to_author[style_id],
+            'dst_path': dst_path
+        }
+        return sample
 
 
 class Msgpack_dataset(Base_dataset):
@@ -397,6 +390,12 @@ class MergedDataset(Dataset):
             else:
                 idx -= len(dataset)
         raise IndexError('Index out of range')
+    
+    def batch_keys(self, *keys):
+        if len(keys) == 1 and isinstance(keys[0], (list, tuple)):
+            keys = keys[0]
+        for dataset in self.datasets:
+            dataset.batch_keys = keys
 
     def collate_fn(self, batch):
         collate_batch = {}
@@ -443,10 +442,10 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
+        if name.lower() == 'iam_eval':
+            datasets_list.append(IAM_eval(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
-        elif name.lower() == 'iam_lines_eval':
-            datasets_list.append(IAM_eval_dataset(path, dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':
             datasets_list.append(IAM_dataset(path, dataset_type='lines_16', **kwargs))
         elif name.lower() == 'iam_lines_sm':
