@@ -22,7 +22,7 @@ from torch.profiler import tensorboard_trace_handler
 from model.teddy import Teddy, freeze, unfreeze
 from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
-from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss
+from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss, MaxMSELoss
 from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, TeddyDataParallel, ChunkLoader
 
 
@@ -101,7 +101,7 @@ def train(rank, args):
     style_criterion = torch.nn.TripletMarginLoss()
     # tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
-    # lpips_criterion = lpips.LPIPS(net='vgg').to(device)
+    cycle_criterion = MaxMSELoss()
 
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
@@ -153,6 +153,11 @@ def train(rank, args):
                 ocr_loss_fake = ctc_criterion(preds['ocr_fake_pred'], preds['enc_gen_text'], preds_size, preds['enc_gen_text_len'])
                 collector['ocr_loss_fake'] = ocr_loss_fake
                 loss_gen += ocr_loss_fake * args.weight_ocr
+
+                # Cycle loss
+                cycle_loss = cycle_criterion(preds['real_style_emb'], preds['fake_style_emb'])
+                collector['cycle_loss'] = cycle_loss
+                loss_gen += cycle_loss * args.weight_cycle
 
                 if batch['ocr_real_train']:
                     preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
@@ -331,7 +336,7 @@ def add_arguments(parser):
     parser.add_argument('--weight_gen', type=float, default=1.0, help="Generator loss weight")
     parser.add_argument('--weight_style', type=float, default=2.0, help="Style loss weight")
     parser.add_argument('--weight_appea', type=float, default=3.0, help="Appearance loss weight")
-    parser.add_argument('--weight_mse', type=float, default=0.0, help="MSE loss weight")
+    parser.add_argument('--weight_cycle', type=float, default=1.0, help="Cycle loss weight")
 
     # Teddy generator
     parser.add_argument('--gen_dim', type=int, default=512, help="Model dimension")

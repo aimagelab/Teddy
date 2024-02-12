@@ -45,3 +45,9 @@ class AdversarialHingeLoss:
     def generator(self, dis_fake):
         loss_fake = -torch.mean(dis_fake)
         return loss_fake
+    
+
+class MaxMSELoss:
+    def __call__(self, real, fake):
+        res = F.mse_loss(real, fake, reduction='none')
+        return res.mean(-1).max(1).values.mean()

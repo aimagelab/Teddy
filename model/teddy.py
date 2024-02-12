@@ -147,7 +147,7 @@ class TeddyGenerator(nn.Module):
         embedding_module = globals()[embedding_module]
         embedding_module_kwargs['dim'] = dim
         self.style_embedding = embedding_module(**embedding_module_kwargs)
-        self.gen_embedding = embedding_module(**embedding_module_kwargs)
+        self.gen_embedding = self.style_embedding
 
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
         transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
@@ -178,7 +178,7 @@ class TeddyGenerator(nn.Module):
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
         x = self.transformer_style_decoder(style_tgt, x)
-        return x
+        return x[:, :self.style_tokens.size(1), :]
 
     def forward_gen(self, style_emb, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
@@ -331,14 +331,14 @@ class Teddy(torch.nn.Module):
 
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_text'], device)
         enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_text'], device)
-        fakes = self.generate(batch['gen_text'], batch['style_text'], batch['style_img'], enc_gen_text, enc_style_text)
+
+        real_style_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
+        fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
 
         dis_glob_real_pred = self.discriminator(batch['style_img'])
         dis_glob_fake_pred = self.discriminator(fakes)
 
-        # style_text_len = torch.tensor([len(t) for t in batch['style_text']], device=device) 
-        # gen_img_len = torch.clamp(batch['style_img_len'] / style_text_len, 0, 16) * enc_gen_text_len
-        # gen_img_len = ((gen_img_len / 16).ceil() * 16).int()
+        fake_style_emb = self.generator.forward_style(fakes, enc_gen_text)
 
         gen_img_len = enc_gen_text_len * 16
         # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * 16
@@ -392,8 +392,8 @@ class Teddy(torch.nn.Module):
             # 'same_other_pred': same_other_pred,
             'ocr_fake_pred': ocr_fake_pred,
             'ocr_real_pred': ocr_real_pred,
-            # 'src_style_emb': src_style_emb,
-            # 'gen_style_emb': gen_style_emb,
+            'real_style_emb': real_style_emb,
+            'fake_style_emb': fake_style_emb,
             'enc_gen_text': enc_gen_text,
             'enc_gen_text_len': enc_gen_text_len,
             'enc_style_text': enc_style_text,
