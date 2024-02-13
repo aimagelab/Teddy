@@ -12,7 +12,7 @@ from torchvision.utils import save_image, make_grid
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from .vae import VariationalAutoencoder
+from .vae import VariationalDecoder
 from .cnn_decoder import FCNDecoder
 from .ocr import OrigamiNet
 from .hwt.model import Discriminator as HWTDiscriminator
@@ -118,7 +118,7 @@ class LearnedPositionalEncoding(nn.Module):
 
 
 class TeddyGenerator(nn.Module):
-    def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=512,
+    def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=2048,
                  channels=3, num_style=3, dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}):
         super().__init__()
         image_height, image_width = pair(image_size)
@@ -138,8 +138,8 @@ class TeddyGenerator(nn.Module):
         )
 
         self.img_pos_encoding = SinusoidalPositionalEncoding(dim)
-        self.style_pos_encoding = self.img_pos_encoding
-        self.gen_pos_encoding = self.img_pos_encoding
+        self.style_pos_encoding = lambda x: x
+        self.gen_pos_encoding = lambda x: x
 
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
 
@@ -161,7 +161,7 @@ class TeddyGenerator(nn.Module):
         self.transformer_style_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
         self.transformer_gen_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
 
-        self.vae = VariationalAutoencoder(dim, channels=channels)
+        self.cnn_decoder = VariationalDecoder(in_dim=dim, out_dim=channels)
         # self.vae.requires_grad_(False)
         # self.decoder = FCNDecoder(dim=dim, out_dim=channels)
 
@@ -170,29 +170,27 @@ class TeddyGenerator(nn.Module):
         b, n, _ = x.shape
 
         x = self.img_pos_encoding(x)
-        x = self.transformer_encoder(x)
+        memory = self.transformer_encoder(x)
 
         style_tgt = self.style_embedding(style_tgt)
         style_tgt = self.style_pos_encoding(style_tgt)
 
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
-        x = self.transformer_style_decoder(style_tgt, x)
-        return x[:, :self.style_tokens.size(1), :]
+        style_memory = self.transformer_style_decoder(style_tgt, memory)
+        return style_memory[:, :self.style_tokens.size(1), :]
 
-    def forward_gen(self, style_emb, gen_tgt):
+    def forward_gen(self, style_memory, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
         gen_tgt = self.gen_pos_encoding(gen_tgt)
 
-        x = self.transformer_gen_decoder(gen_tgt, style_emb)
-        # x = self.vae.sample(x)
-        x = self.vae.decoder(x)
-        # x = self.decoder(x)
-        return x
+        output = self.transformer_gen_decoder(gen_tgt, style_memory)
+        output = self.cnn_decoder(output)
+        return output
 
     def forward(self, style_img, style_tgt, gen_tgt):
-        style_emb = self.forward_style(style_img, style_tgt)
-        fakes = self.forward_gen(style_emb, gen_tgt)
+        style_memory = self.forward_style(style_img, style_tgt)
+        fakes = self.forward_gen(style_memory, gen_tgt)
         return fakes
 
 

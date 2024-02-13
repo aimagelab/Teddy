@@ -236,7 +236,12 @@ class IAM_eval(IAM_dataset):
 
         with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
             self.data = json.load(file)
+
         self.imgs_id_to_path = {img.stem: img for img in self.imgs}
+
+    def filter_eval_set(self, *eval_set):
+        eval_set = set(eval_set)
+        self.data = [el for el in self.data if Path(el['dst']).parts[0] in eval_set]
         
     def __len__(self):
         return len(self.data)

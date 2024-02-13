@@ -20,6 +20,7 @@ from tqdm import tqdm
 from torch.profiler import tensorboard_trace_handler
 
 from model.teddy import Teddy, freeze, unfreeze
+from generate_images import setup_loader, generate_images, Evaluator
 from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss, MaxMSELoss
@@ -29,6 +30,8 @@ from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, Ted
 def free_mem_percent():
     return [torch.cuda.mem_get_info(i)[0] / torch.cuda.mem_get_info(i)[1] for i in range(torch.cuda.device_count())]
 
+def count_parameters_in_millions(model):
+    return sum(p.numel() for p in model.parameters()) / 1e6
 
 def internet_connection():
     try:
@@ -52,14 +55,17 @@ def train(rank, args):
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=True)
     loader = ChunkLoader(loader, args.epochs_size)
 
+    evaluation_loader = None 
+    evaluator = Evaluator().to(device)
+    evaluator.set_real_dataset(args.eval_real_dataset_path)
+
     ocr_checkpoint_a = torch.load(args.ocr_checkpoint_a, map_location=device)
     ocr_checkpoint_b = torch.load(args.ocr_checkpoint_b, map_location=device)
     ocr_checkpoint_c = torch.load(args.ocr_checkpoint_c, map_location=device)
     assert ocr_checkpoint_a['charset'] == ocr_checkpoint_b['charset'], "OCR checkpoints must have the same charset"
 
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
-    # vae_checkpoint = torch.load(args.vae_checkpoint, map_location=device)
-    # teddy.generator.vae.load_state_dict(vae_checkpoint['model'])
+    print(f'Teddy has {count_parameters_in_millions(teddy):.2f} M parameters.')
 
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
     # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
@@ -109,7 +115,7 @@ def train(rank, args):
     if args.wandb and rank == 0 and not args.dryrun:
         name = f"{args.run_id}_{args.tag}"
         wandb.init(project='teddy', entity='fomo_aiisdh', name=name, config=args)
-        # wandb.watch(teddy, log="all", log_graph=False)  # raise error on DDP
+        wandb.watch(teddy, log="all")  # raise error on DDP
 
     collector = MetricCollector()
 
@@ -191,6 +197,16 @@ def train(rank, args):
                 with GradSwitch(teddy, teddy.ocr):
                     scaler.scale(loss_ocr).backward(retain_graph=True)
 
+            # Check gradient magnitude
+            # transformer_params = [(name, param) for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
+            # cnn_params = [(name, param) for name, param in teddy.generator.named_parameters() if 'cnn_decoder' in name]
+
+            # for name, param in transformer_params:
+            #     print(f"Gradient magnitude for transformer parameter ({name}) {param.shape}: {param.grad.abs().mean().item()}")
+
+            # for name, param in cnn_params:
+            #     print(f"Gradient magnitude for CNN parameter ({name}) {param.shape}: {param.grad.abs().mean().item()}")
+
             if idx % args.dis_critic_num == 0:
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
@@ -236,18 +252,7 @@ def train(rank, args):
         # if args.ddp:
         #     collector = gather_collectors(collector)
 
-        if args.wandb and rank == 0 and not args.dryrun:
-            collector.print(f'Epoch {epoch} | ')
-            wandb.log({
-                'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
-                'epoch': epoch,
-                'images/all': [wandb.Image(torch.cat([style_img, img_grid], dim=2), caption='real/fake')],
-                'images/page': [wandb.Image(eval_page, caption='eval')],
-                'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
-                'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
-            } | collector.dict())
-
-        if rank == 0 and epoch % 10 == 0 and epoch > 0 and not args.dryrun:
+        if rank == 0 and epoch % 25 == 0 and epoch > 0 and not args.dryrun:
             dst = args.checkpoint_path / f'{epoch:06d}_epochs.pth'
             dst.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
@@ -259,6 +264,22 @@ def train(rank, args):
                 'optimizer_ocr': optimizer_ocr.state_dict(),
                 'args': vars(args),
             }, dst)
+
+            evaluation_loader = setup_loader(rank, args) if evaluation_loader else evaluation_loader
+            teddy.eval()
+            generate_images(rank, args, teddy, evaluation_loader)
+            collector['HWD', 'FID', 'KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
+
+        if args.wandb and rank == 0 and not args.dryrun:
+            collector.print(f'Epoch {epoch} | ')
+            wandb.log({
+                'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
+                'epoch': epoch,
+                'images/all': [wandb.Image(torch.cat([style_img, img_grid], dim=2), caption='real/fake')],
+                'images/page': [wandb.Image(eval_page, caption='eval')],
+                'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
+                'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
+            } | collector.dict())
 
         collector.reset()
         teddy.collector.reset()
@@ -312,6 +333,12 @@ def add_arguments(parser):
     parser.add_argument('--tag', type=str, default='none', help="Tag")
     parser.add_argument('--dryrun', action='store_true', help="Dryrun")
 
+    # Evaluation
+    parser.add_argument('--eval_real_dataset_path', type=Path, default='files/iam', help="Real dataset path")
+    parser.add_argument('--eval_avg_char_width_16', action='store_true')
+    parser.add_argument('--eval_epoch', type=int)
+    parser.add_argument('--eval_batch_size', type=int, default=64)
+                        
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
     parser.add_argument('--datasets_path', type=str, nargs='+', default=['IAM',], help="Datasets path")
