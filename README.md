@@ -12,9 +12,13 @@ pip install -r requirements.txt
 
 Download the files necessary to run the code:
 ```bash
-wget https://github.com/aimagelab/Teddy/releases/download/files/files.zip
-unzip files.zip
-rm files.zip
+wget https://github.com/aimagelab/Teddy/releases/download/files/iam_eval.zip
+unzip iam_eval.zip
+rm iam_eval.zip
+
+wget https://github.com/aimagelab/Teddy/releases/download/files/ocr_checkpoints.zip
+unzip ocr_checkpoints.zip
+rm ocr_checkpoints.zip
 ```
 
 Download the dataset:
