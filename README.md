@@ -19,6 +19,9 @@ rm iam_eval.zip
 wget https://github.com/aimagelab/Teddy/releases/download/files/ocr_checkpoints.zip
 unzip ocr_checkpoints.zip
 rm ocr_checkpoints.zip
+
+cd files
+wget https://github.com/aimagelab/Teddy/releases/download/files/iam_htg_setting.json.gz
 ```
 
 Download HWD:
