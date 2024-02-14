@@ -118,7 +118,7 @@ class LearnedPositionalEncoding(nn.Module):
 
 
 class TeddyGenerator(nn.Module):
-    def __init__(self, image_size, patch_size, dim=512, depth=3, heads=8, mlp_dim=2048,
+    def __init__(self, image_size, patch_size, dim=512, depth=6, heads=8, mlp_dim=2048,
                  channels=3, num_style=3, dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}):
         super().__init__()
         image_height, image_width = pair(image_size)
@@ -138,8 +138,8 @@ class TeddyGenerator(nn.Module):
         )
 
         self.img_pos_encoding = SinusoidalPositionalEncoding(dim)
-        self.style_pos_encoding = lambda x: x
-        self.gen_pos_encoding = lambda x: x
+        self.style_pos_encoding = self.img_pos_encoding
+        self.gen_pos_encoding = self.img_pos_encoding
 
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
 

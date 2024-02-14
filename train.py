@@ -70,7 +70,13 @@ def train(rank, args):
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
     # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
 
-    optimizer_gen = torch.optim.AdamW(teddy.generator.parameters(), lr=args.lr_gen)
+    
+    transformer_params = [param for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
+    cnn_decoder_params = [param for name, param in teddy.generator.named_parameters() if 'cnn_decoder' in name]
+    optimizer_gen = torch.optim.AdamW([
+        {'params': transformer_params, 'lr': args.lr_gen_transformer},
+        {'params': cnn_decoder_params, 'lr': args.lr_gen_cnn_decoder}
+    ])
     # scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
 
     match args.ocr_scheduler:
@@ -198,14 +204,8 @@ def train(rank, args):
                     scaler.scale(loss_ocr).backward(retain_graph=True)
 
             # Check gradient magnitude
-            # transformer_params = [(name, param) for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
-            # cnn_params = [(name, param) for name, param in teddy.generator.named_parameters() if 'cnn_decoder' in name]
-
-            # for name, param in transformer_params:
-            #     print(f"Gradient magnitude for transformer parameter ({name}) {param.shape}: {param.grad.abs().mean().item()}")
-
-            # for name, param in cnn_params:
-            #     print(f"Gradient magnitude for CNN parameter ({name}) {param.shape}: {param.grad.abs().mean().item()}")
+            collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
+            collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
 
             if idx % args.dis_critic_num == 0:
                 scaler.step(optimizer_dis)
@@ -247,7 +247,7 @@ def train(rank, args):
             collector['time/epoch_inference'] = time.time() - epoch_start_time
             collector['ocr_loss_real'] = ocr_loss_real
         # collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
-        collector['lr_dis', 'lr_gen'] = args.lr_dis, args.lr_gen
+        collector['lr_dis', 'lr_gen_transformer', 'lr_gen_cnn_decoder'] = args.lr_dis, args.lr_gen_transformer, args.lr_gen_cnn_decoder
         collector += teddy.collector
         # if args.ddp:
         #     collector = gather_collectors(collector)
@@ -268,7 +268,7 @@ def train(rank, args):
             evaluation_loader = setup_loader(rank, args) if evaluation_loader else evaluation_loader
             teddy.eval()
             generate_images(rank, args, teddy, evaluation_loader)
-            collector['HWD', 'FID', 'KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
+            collector['scores/HWD', 'scores/FID', 'scores/KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
 
         if args.wandb and rank == 0 and not args.dryrun:
             collector.print(f'Epoch {epoch} | ')
@@ -315,7 +315,8 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     
 
 def add_arguments(parser):
-    parser.add_argument('--lr_gen', type=float, default=0.00005)
+    parser.add_argument('--lr_gen_transformer', type=float, default=0.000001)
+    parser.add_argument('--lr_gen_cnn_decoder', type=float, default=0.0005)
     parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--batch_size', type=int, default=4)

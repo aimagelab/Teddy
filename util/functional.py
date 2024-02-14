@@ -106,6 +106,8 @@ class MetricCollector:
     def _single_setitem(self, key, value):
         if isinstance(value, torch.Tensor):
             value = value.item()
+        if np.isnan(value) or np.isinf(value):
+            return
         if key not in self.data:
             self.data[key] = {'tot': 0.0, 'count': 0}
         self.data[key]['tot'] += value
@@ -211,3 +213,20 @@ class ChunkLoader:
 
     def __len__(self):
         return self.chunk_size
+    
+
+class FakeScaler:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def scale(self, loss):
+        return loss
+
+    def step(self, *args, **kwargs):
+        pass
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def zero_grad(self):
+        pass

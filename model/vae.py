@@ -41,6 +41,11 @@ class VariationalDecoder(nn.Module):
         
         self.modules = []
         self.modules.append(ResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type))
+
+        # self.modules.append(nn.MaxPool2d(2))
+        # self.modules.append(ResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type))
+        # self.modules.append(nn.Upsample(scale_factor=2))
+
         for _ in range(ups):
             self.modules.append(nn.Upsample(scale_factor=2))
             self.modules.append(Conv2dBlock(dim, dim // 2, 5, 1, 2, norm='in', activation=activ, pad_type=pad_type))
