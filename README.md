@@ -21,6 +21,11 @@ unzip ocr_checkpoints.zip
 rm ocr_checkpoints.zip
 ```
 
+Download HWD:
+```bash
+git clone https://github.com/aimagelab/HWD hwd
+```
+
 Download the dataset:
 ```bash
 cd /folder/to/datasets
