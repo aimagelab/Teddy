@@ -170,7 +170,7 @@ class IAM_dataset(Base_dataset):
             self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
             # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
-            self.imgs = [img for img in self.imgs if target_width[img.stem] <= max_width]
+            self.imgs = [img for img in self.imgs if img.stem in target_width and target_width[img.stem] <= max_width]
 
         self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.imgs_set = set(self.imgs)

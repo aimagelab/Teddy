@@ -114,6 +114,7 @@ def train(rank, args):
     # tmse_criterion = SquareThresholdMSELoss(threshold=0)
     hinge_criterion = AdversarialHingeLoss()
     cycle_criterion = MaxMSELoss()
+    recon_criterion = torch.nn.MSELoss()
 
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
     text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
@@ -185,6 +186,12 @@ def train(rank, args):
                 collector['style_glob_loss', 'style_local_loss', 'appea_local_loss'] = style_glob_loss, style_local_loss, appea_local_loss
                 loss_gen += (style_glob_loss + style_local_loss) * args.weight_style + appea_local_loss * args.weight_appea
 
+                # Reconstruction loss
+                min_width = min(preds['fakes_recon'].size(-1), batch['style_img'].size(-1))
+                recon_loss = recon_criterion(preds['fakes_recon'][..., :min_width], batch['style_img'][..., :min_width])
+                collector['recon_loss'] = recon_loss
+                loss_gen += recon_loss * args.weight_recon
+
                 collector['loss_gen'] = loss_gen
 
                 clock.start()  # time/data_load
@@ -224,6 +231,7 @@ def train(rank, args):
         if args.wandb and rank == 0:
             with torch.inference_mode():
                 img_grid = make_grid(preds['fakes'], nrow=1, normalize=True, value_range=(-1, 1))
+                img_grid_recon = make_grid(preds['fakes_recon'], nrow=1, normalize=True, value_range=(-1, 1))
 
                 fake = preds['fakes'][0].detach().cpu().permute(1, 2, 0).numpy()
                 fake_pred = teddy.text_converter.decode_batch(preds['ocr_fake_pred'])[0]
@@ -276,6 +284,7 @@ def train(rank, args):
                 'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
                 'epoch': epoch,
                 'images/all': [wandb.Image(torch.cat([style_img, img_grid], dim=2), caption='real/fake')],
+                'images/all_recon': [wandb.Image(torch.cat([style_img, img_grid_recon], dim=2), caption='real/fake')],
                 'images/page': [wandb.Image(eval_page, caption='eval')],
                 'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
@@ -365,6 +374,7 @@ def add_arguments(parser):
     parser.add_argument('--weight_style', type=float, default=2.0, help="Style loss weight")
     parser.add_argument('--weight_appea', type=float, default=3.0, help="Appearance loss weight")
     parser.add_argument('--weight_cycle', type=float, default=1.0, help="Cycle loss weight")
+    parser.add_argument('--weight_recon', type=float, default=1.0, help="Reconstruction loss weight")
 
     # Teddy generator
     parser.add_argument('--gen_dim', type=int, default=512, help="Model dimension")
