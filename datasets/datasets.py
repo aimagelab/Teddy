@@ -7,6 +7,7 @@ from PIL import Image
 import torch
 import html
 import gzip
+import pickle
 from torch.utils.data import Dataset
 import msgpack
 import json
@@ -32,7 +33,7 @@ def pad_images(images, padding_value=1):
 
 
 class Base_dataset(Dataset):
-    def __init__(self, path, nameset='train', transform=T.ToTensor()):
+    def __init__(self, path, nameset='train', transform=T.ToTensor(), pkl_path=None):
         super().__init__()
         if isinstance(transform, tuple):
             self.pre_transform, self.post_transform = transform
@@ -40,9 +41,7 @@ class Base_dataset(Dataset):
             self.pre_transform, self.post_transform = None, transform
         self.nameset = nameset
         self.path = path
-        self.imgs = []
-        self.imgs_to_label = {}
-        self.imgs_to_author = {}
+
         self.imgs_to_idx = {}
         self.char_to_idx = {}
         self.idx_to_char = {}
@@ -50,6 +49,21 @@ class Base_dataset(Dataset):
         self.imgs_set = set()
         self.preloaded = False
         self.batch_keys = ['style', 'other', 'same']
+
+        if pkl_path is None or not pkl_path.exists():
+            self.imgs = []
+            self.imgs_to_label = {}
+            self.imgs_to_author = {}
+            self.imgs_to_sizes = {}
+        else:
+            with open(pkl_path, 'rb') as f:
+                data = pickle.load(f)
+            self.imgs = data['imgs']
+            self.imgs_preloaded = data['imgs_preloaded']
+            self.imgs_to_label = data['imgs_to_label']
+            self.imgs_to_author = data['imgs_to_author']
+            self.imgs_to_sizes = data['imgs_to_sizes']
+            self.preloaded = True
 
     def __len__(self):
         return len(self.imgs)
@@ -120,18 +134,38 @@ class Base_dataset(Dataset):
             self.imgs_preloaded = [self.pre_transform((img, lbl))[0] for img, lbl in self.imgs_preloaded]
         self.preloaded = True
 
+    def save_pickle(self, path):
+        imgs_preloaded = [(Image.open(img_path), self.imgs_to_label[img_path.stem]) for img_path in tqdm(self.imgs, desc='Reading images')]
+        imgs_preloaded = [self.pre_transform((img, lbl))[0] for img, lbl in tqdm(imgs_preloaded, desc='Preprocessing images')]
+        data = {
+            'imgs': self.imgs,
+            'imgs_preloaded': imgs_preloaded,
+            'imgs_to_label': self.imgs_to_label,
+            'imgs_to_author': self.imgs_to_author,
+            'imgs_to_sizes': self.author_to_imgs,
+        }
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+        print(f'Dataset saved to {path}')
 
 class IAM_dataset(Base_dataset):
-    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preload=False):
-        super().__init__(path, nameset, transform)
+    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preload=False, pkl_path=None, **kwargs):
+        super().__init__(path, nameset, transform, pkl_path)
         self.dataset_type = dataset_type
 
-        self.imgs = list(Path(path, self.dataset_type).rglob('*.png'))
+        if pkl_path is None or not pkl_path.exists():
+            self.imgs = list(Path(path, self.dataset_type).rglob('*.png'))
 
-        xml_files = [ET.parse(xml_file) for xml_file in Path(path, 'xmls').rglob('*.xml')]
-        tag = 'line' if self.dataset_type.startswith('lines') else 'word'
-        self.imgs_to_label = {el.attrib['id']: html.unescape(el.attrib['text']) for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
-        self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
+            xml_files = [ET.parse(xml_file) for xml_file in Path(path, 'xmls').rglob('*.xml')]
+            tag = 'line' if self.dataset_type.startswith('lines') else 'word'
+            self.imgs_to_label = {el.attrib['id']: html.unescape(el.attrib['text']) for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
+            self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
+
+            img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
+            self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+
+        if pkl_path is not None and not pkl_path.exists():
+            self.save_pickle(pkl_path)
 
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
@@ -166,8 +200,6 @@ class IAM_dataset(Base_dataset):
         self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
 
         if max_width and max_height:
-            img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
-            self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
             # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
             self.imgs = [img for img in self.imgs if img.stem in target_width and target_width[img.stem] <= max_width]
@@ -176,21 +208,22 @@ class IAM_dataset(Base_dataset):
         self.imgs_set = set(self.imgs)
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
 
-        if preload:
-            self.preload()
-
 
 class IAM_custom_dataset(Base_dataset):
-    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preload=False, **kwargs):
-        super().__init__(path, nameset, transform)
+    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preload=False, pkl_path=None, **kwargs):
+        super().__init__(path, nameset, transform, pkl_path)
 
-        self.imgs = list(Path(path, dataset_type).rglob('*.png'))
+        if pkl_path is None or not pkl_path.exists():
+            self.imgs = list(Path(path, dataset_type).rglob('*.png'))
 
-        with open(Path(path, dataset_type, 'data.json')) as f:
-            self.data = json.load(f)
+            with open(Path(path, dataset_type, 'data.json')) as f:
+                self.data = json.load(f)
 
-        self.imgs_to_label = {img_id: value['text'] for img_id, value in self.data.items()}
-        self.imgs_to_author = {img_id: value['auth'] for img_id, value in self.data.items()}
+            self.imgs_to_label = {img_id: value['text'] for img_id, value in self.data.items()}
+            self.imgs_to_author = {img_id: value['auth'] for img_id, value in self.data.items()}
+
+        if pkl_path is not None and not pkl_path.exists():
+            self.save_pickle(pkl_path)
 
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
@@ -220,9 +253,6 @@ class IAM_custom_dataset(Base_dataset):
         self.imgs_set = set(self.imgs)
         self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
-
-        if preload:
-            self.preload()
 
 
 class IAM_eval(IAM_dataset):
@@ -271,30 +301,34 @@ class IAM_eval(IAM_dataset):
 
 
 class Msgpack_dataset(Base_dataset):
-    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False):
-        super().__init__(path, nameset, transform)
+    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False, pkl_path=None, **kwargs):
+        super().__init__(path, nameset, transform, pkl_path)
 
-        nameset_path = Path(path, f'{nameset}.msgpack')
-        assert nameset_path.exists(), f'No msgpack file found in {path}'
+        if pkl_path is None or not pkl_path.exists():
+            nameset_path = Path(path, f'{nameset}.msgpack')
+            assert nameset_path.exists(), f'No msgpack file found in {path}'
 
-        with open(nameset_path, 'rb') as f:
-            data = msgpack.load(f)
+            with open(nameset_path, 'rb') as f:
+                data = msgpack.load(f)
 
-        self.imgs_to_label = {Path(filename).stem: label for filename, label, *_ in data}
-        self.imgs_to_author = {Path(filename).stem: '000' for filename, *_ in data}
+            self.imgs_to_label = {Path(filename).stem: label for filename, label, *_ in data}
+            self.imgs_to_author = {Path(filename).stem: '000' for filename, *_ in data}
 
-        self.imgs = [Path(path, 'lines') / filename for filename, *_ in data]
-        assert len(self.imgs) > 0, f'No images found in {path}'
+            self.imgs = [Path(path, 'lines') / filename for filename, *_ in data]
+            assert len(self.imgs) > 0, f'No images found in {path}'
+
+            img_sizes_path = Path(path, f'{nameset}_img_sizes.msgpack')
+            self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+            assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
+
+        if pkl_path is not None and not pkl_path.exists():
+            self.save_pickle(pkl_path)
 
         charset_path = Path(path, 'charset.msgpack')
         with open(charset_path, 'rb') as f:
             charset = msgpack.load(f, strict_map_key=False)
         self.char_to_idx = charset['char2idx']
         self.idx_to_char = charset['idx2char']
-
-        img_sizes_path = Path(path, f'{nameset}_img_sizes.msgpack')
-        self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
-        assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
 
         if max_width and max_height:
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
@@ -304,9 +338,6 @@ class Msgpack_dataset(Base_dataset):
         self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         authors = set(self.imgs_to_author.values())
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in authors}
-
-        if preload:
-            self.preload()
 
 
 class Norhand_dataset(Msgpack_dataset):
@@ -441,13 +472,15 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
     ]) if post_transform is None else post_transform
 
     datasets_list = []
-    kwargs = {'max_width': gen_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
+    glob_kwargs = {'max_width': gen_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
     assert len(datasets) == len(datasets_path), f'Number of datasets and paths must match, got {len(datasets)} datasets and {len(datasets_path)} paths'
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
+        kwargs = {'pkl_path': path.parent / f'{name.lower()}.pkl'}
+        kwargs.update(glob_kwargs)
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_eval':
-            datasets_list.append(IAM_eval(path, dataset_type='words', **kwargs))
+            datasets_list.append(IAM_eval(path, dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':
