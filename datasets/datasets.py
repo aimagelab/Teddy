@@ -446,7 +446,7 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
     for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
-        if name.lower() == 'iam_eval':
+        elif name.lower() == 'iam_eval':
             datasets_list.append(IAM_eval(path, dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
