@@ -133,10 +133,6 @@ class IAM_dataset(Base_dataset):
         self.imgs_to_label = {el.attrib['id']: html.unescape(el.attrib['text']) for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
         self.imgs_to_author = {el.attrib['id']: xml_file.getroot().attrib['writer-id'] for xml_file in xml_files for el in xml_file.iter() if el.tag == tag}
 
-        img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
-        self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
-        # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
-
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
 
@@ -170,6 +166,9 @@ class IAM_dataset(Base_dataset):
         self.idx_to_char = dict(zip(self.char_to_idx.values(), self.char_to_idx.keys()))
 
         if max_width and max_height:
+            img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
+            self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+            # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
             self.imgs = [img for img in self.imgs if target_width[img.stem] <= max_width]
 
