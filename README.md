@@ -32,9 +32,22 @@ git clone https://github.com/aimagelab/HWD hwd
 Download the dataset:
 ```bash
 cd /folder/to/datasets
-wget -i https://github.com/aimagelab/Teddy/releases/download/datasets/urls.txt
-zip -F IAM.zip --out IAM-single.zip && unzip IAM-single.zip
-rm IAM.zip IAM.z0* IAM-single.zip urls.txt
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines_sm.tar.gz | tar xvz
+
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_eval.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines_16.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines_xs.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines_xxs.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/iam_words.tar.gz | tar xvz
+
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/icfhr14.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/icfhr16.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/leopardi.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/norhand.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/rimes.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/saintgall.tar.gz | tar xvz
+wget -qO- https://github.com/aimagelab/Teddy/releases/download/pkl/washington.tar.gz | tar xvz
 ```
 
 ## Training
