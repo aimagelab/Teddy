@@ -451,7 +451,7 @@ class MergedDataset(Dataset):
         return collate_batch
 
 
-def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None,
+def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patch_width=16, gen_max_width=None,
                     img_channels=3, db_preload=False, pre_transform=None, post_transform=None, **kwargs):
     
     pre_transform = T.Compose([
@@ -473,42 +473,43 @@ def dataset_factory(nameset, datasets, datasets_path, idx_to_char=None, img_heig
 
     datasets_list = []
     glob_kwargs = {'max_width': gen_max_width, 'max_height': img_height, 'transform': (pre_transform, post_transform), 'nameset': nameset, 'preload': db_preload}
-    assert len(datasets) == len(datasets_path), f'Number of datasets and paths must match, got {len(datasets)} datasets and {len(datasets_path)} paths'
-    for name, path in tqdm(zip(datasets, datasets_path), total=len(datasets), desc=f'Loading datasets {nameset}'):
-        kwargs = {'pkl_path': path.parent / f'{name.lower()}.pkl'}
+    root_path = Path(kwargs['root_path'])
+
+    for name in tqdm(datasets, desc=f'Loading datasets {nameset}'):
+        kwargs = {'pkl_path': root_path / f'{name.lower()}.pkl'}
         kwargs.update(glob_kwargs)
         if name.lower() == 'iam_words':
-            datasets_list.append(IAM_dataset(path, dataset_type='words', **kwargs))
+            datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', **kwargs))
         elif name.lower() == 'iam_eval':
-            datasets_list.append(IAM_eval(path, dataset_type='lines', **kwargs))
+            datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines':
-            datasets_list.append(IAM_dataset(path, dataset_type='lines', **kwargs))
+            datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':
-            datasets_list.append(IAM_dataset(path, dataset_type='lines_16', **kwargs))
+            datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='lines_16', **kwargs))
         elif name.lower() == 'iam_lines_sm':
-            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_sm', **kwargs))
+            datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_sm', **kwargs))
         elif name.lower() == 'iam_lines_xs':
-            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_xs', **kwargs))
+            datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_xs', **kwargs))
         elif name.lower() == 'iam_lines_xxs':
-            datasets_list.append(IAM_custom_dataset(path, dataset_type='lines_xxs', **kwargs))
+            datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_xxs', **kwargs))
         elif name.lower() == 'rimes':
-            datasets_list.append(Rimes_dataset(path, **kwargs))
+            datasets_list.append(Rimes_dataset(root_path / 'Rimes', **kwargs))
         elif name.lower() == 'icfhr16':
-            datasets_list.append(ICFHR16_dataset(path, **kwargs))
+            datasets_list.append(ICFHR16_dataset(root_path / 'ICFHR16', **kwargs))
         elif name.lower() == 'icfhr14':
-            datasets_list.append(ICFHR14_dataset(path, **kwargs))
+            datasets_list.append(ICFHR14_dataset(root_path / 'ICFHR14', **kwargs))
         elif name.lower() == 'lam':
-            datasets_list.append(LAM_dataset(path, **kwargs))
+            datasets_list.append(LAM_dataset(root_path / 'LAM_msgpack', **kwargs))
         elif name.lower() == 'rodrigo':
-            datasets_list.append(Rodrigo_dataset(path, **kwargs))
+            datasets_list.append(Rodrigo_dataset(root_path / 'Rodrigo', **kwargs))
         elif name.lower() == 'saintgall':
-            datasets_list.append(SaintGall_dataset(path, **kwargs))
+            datasets_list.append(SaintGall_dataset(root_path / 'SaintGall', **kwargs))
         elif name.lower() == 'washington':
-            datasets_list.append(Washington_dataset(path, **kwargs))
+            datasets_list.append(Washington_dataset(root_path / 'Washington', **kwargs))
         elif name.lower() == 'leopardi':
-            datasets_list.append(Leopardi_dataset(path, **kwargs))
+            datasets_list.append(Leopardi_dataset(root_path / 'LEOPARDI' / 'leopardi', **kwargs))
         elif name.lower() == 'norhand':
-            datasets_list.append(Norhand_dataset(path, **kwargs))
+            datasets_list.append(Norhand_dataset(root_path / 'Norhand', **kwargs))
         else:
             raise ValueError(f'Unknown dataset {name}')
     return MergedDataset(datasets_list, idx_to_char)

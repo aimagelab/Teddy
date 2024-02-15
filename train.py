@@ -351,7 +351,6 @@ def add_arguments(parser):
                         
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
-    parser.add_argument('--datasets_path', type=str, nargs='+', default=['IAM',], help="Datasets path")
     parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_sm',], help="Datasets")
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
 
@@ -409,7 +408,6 @@ if __name__ == '__main__':
     parser = add_arguments(parser)
     args = parser.parse_args()
 
-    args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
     args.checkpoint_path = Path(args.checkpoint_path, args.run_id)
 
     set_seed(args.seed)
