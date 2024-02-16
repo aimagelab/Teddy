@@ -5,6 +5,7 @@
 #SBATCH -o /work/FoMo_AIISDH/vpippi/Teddy/jobs/teddy_%j.out
 #SBATCH --mem=32G
 #SBATCH -J teddy
+#SBATCH --account=fomo_aiisdh
 #SBATCH --time=1-00:00:00
 #SBATCH --constraint="gpu_RTX6000_24G|gpu_RTXA5000_24G"
 
