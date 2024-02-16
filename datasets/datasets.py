@@ -268,7 +268,6 @@ class IAM_custom_dataset(Base_dataset):
 
 class IAM_eval(IAM_dataset):
     def __init__(self, *args, **kwargs):
-        kwargs['dataset_type'] = 'lines'
         kwargs['nameset'] = 'all'
         kwargs['max_width'] = None
         kwargs['max_height'] = None
@@ -289,7 +288,12 @@ class IAM_eval(IAM_dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         gen_text = sample['word']
-        style_id = sample['style_ids'][0][:-3]
+
+        style_id = sample['style_ids'][0].split('-')
+        while '-'.join(style_id) not in self.imgs_to_label and len(style_id) > 0:
+            style_id.pop(-1)
+        style_id = '-'.join(style_id)
+
         style_text = self.imgs_to_label[style_id]
         style_img = Image.open(self.imgs_id_to_path[style_id])
 
@@ -475,10 +479,10 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
 
     post_transform = T.Compose([
         # T.ToPILImage(),
+        T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width']), padding_value=255),
         T.RandomShrink(0.8, 1.2, min_width=max(kwargs['style_patch_width'], kwargs['dis_patch_width']), max_width=gen_max_width, snap_to=gen_patch_width),
         T.ToTensor(),
         T.MedianRemove(),
-        # T.PadMinWidth(max(kwargs['style_patch_width'], kwargs['dis_patch_width'])),
         T.Normalize((0.5,), (0.5,))
     ]) if post_transform is None else post_transform
 
@@ -493,6 +497,8 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', **kwargs))
         elif name.lower() == 'iam_eval':
             datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='lines', **kwargs))
+        elif name.lower() == 'iam_eval_words':
+            datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':

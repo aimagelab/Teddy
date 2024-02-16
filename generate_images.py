@@ -67,10 +67,8 @@ def process_image(fakes, gen_texts, dsts, fakes_path):
 
 
 @torch.no_grad()
-def setup_loader(rank, args):
-    device = torch.device(rank)
-
-    args.datasets = ['iam_eval']
+def setup_loader(rank, args, eval_dataset='iam_eval'):
+    args.datasets = [eval_dataset, ]
     datasets_kwargs = args.__dict__.copy()
     datasets_kwargs['pre_transform'] = T.Compose([
             T.Convert(1),

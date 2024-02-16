@@ -4,6 +4,7 @@ import math
 from torchvision.transforms import functional as F
 from torchvision import transforms as T
 from torchvision.transforms import Compose
+import torch
 
 
 class ResizeFixedHeight(object):
@@ -130,7 +131,13 @@ class PadMinWidth(object):
 
     def __call__(self, sample):
         img, lbl = sample
-        c, h, w = img.shape
+        if isinstance(img, Image.Image):
+            w, h = img.size
+        elif isinstance(img, torch.Tensor):
+            c, h, w = img.shape
+        else:
+            raise NotImplementedError
+        
         if w >= self.min_width:
             return img, lbl
         pad_width = self.min_width - w

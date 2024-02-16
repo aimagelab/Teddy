@@ -273,7 +273,7 @@ def train(rank, args):
                 'args': vars(args),
             }, dst)
 
-            evaluation_loader = setup_loader(rank, args) if evaluation_loader else evaluation_loader
+            evaluation_loader = setup_loader(rank, args, args.eval_dataset) if evaluation_loader else evaluation_loader
             teddy.eval()
             generate_images(rank, args, teddy, evaluation_loader)
             collector['scores/HWD', 'scores/FID', 'scores/KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
@@ -345,6 +345,7 @@ def add_arguments(parser):
 
     # Evaluation
     parser.add_argument('--eval_real_dataset_path', type=Path, default='files/iam', help="Real dataset path")
+    parser.add_argument('--eval_dataset', type=str, default='iam_eval', help="Eval dataset")
     parser.add_argument('--eval_avg_char_width_16', action='store_true')
     parser.add_argument('--eval_epoch', type=int)
     parser.add_argument('--eval_batch_size', type=int, default=64)
