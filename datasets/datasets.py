@@ -96,6 +96,7 @@ class Base_dataset(Dataset):
         if 'other' in self.batch_keys or 'same' in self.batch_keys:
             same_author_imgs = self.author_to_imgs[style_author]
             other_author_imgs = self.imgs_set - same_author_imgs
+            other_author_imgs = other_author_imgs if len(other_author_imgs) > 0 else same_author_imgs
 
             if 'other' in self.batch_keys:
                 path = random.choice(list(other_author_imgs))
@@ -142,7 +143,7 @@ class Base_dataset(Dataset):
             'imgs_preloaded': imgs_preloaded,
             'imgs_to_label': self.imgs_to_label,
             'imgs_to_author': self.imgs_to_author,
-            'imgs_to_sizes': self.author_to_imgs,
+            'imgs_to_sizes': self.imgs_to_sizes,
         }
         with open(path, 'wb') as f:
             pickle.dump(data, f)
@@ -190,6 +191,8 @@ class IAM_dataset(Base_dataset):
             raise ValueError(f'Unknown nameset {nameset}')
         target_authors = sorted(set(target_authors))
 
+        if self.preloaded:
+            self.imgs_preloaded = [img for path, img in zip(self.imgs, self.imgs_preloaded) if self.imgs_to_author[path.stem] in target_authors]
         self.imgs = [img for img in self.imgs if self.imgs_to_author[img.stem] in target_authors]
         self.imgs_to_author = {k: v for k, v in self.imgs_to_author.items() if v in target_authors}
         self.imgs_to_label = {k: v for k, v in self.imgs_to_label.items() if k in self.imgs_to_author}
@@ -202,11 +205,15 @@ class IAM_dataset(Base_dataset):
         if max_width and max_height:
             # assert set(self.imgs_to_label.keys()) == set(self.imgs_to_sizes.keys())
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
+            if self.preloaded:
+                self.imgs_preloaded = [img for path, img in zip(self.imgs, self.imgs_preloaded) if path.stem in target_width and target_width[path.stem] <= max_width]
             self.imgs = [img for img in self.imgs if img.stem in target_width and target_width[img.stem] <= max_width]
 
         self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.imgs_set = set(self.imgs)
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
+        
+        assert not self.preloaded or len(self.imgs) == len(self.imgs_preloaded), 'Preloaded images do not match'
 
 
 class IAM_custom_dataset(Base_dataset):
@@ -241,6 +248,8 @@ class IAM_custom_dataset(Base_dataset):
         else:
             raise ValueError(f'Unknown nameset {nameset}')
 
+        if self.preloaded:
+            self.imgs_preloaded = [img for path, img in zip(self.imgs, self.imgs_preloaded) if self.imgs_to_author[path.stem] in target_authors]
         self.imgs = [img for img in self.imgs if self.imgs_to_author[img.stem] in target_authors]
         # self.imgs_to_author = {k: v for k, v in self.imgs_to_author.items() if v in target_authors}
         # self.imgs_to_label = {k: v for k, v in self.imgs_to_label.items() if k in self.imgs_to_author}
@@ -253,6 +262,8 @@ class IAM_custom_dataset(Base_dataset):
         self.imgs_set = set(self.imgs)
         self.imgs_to_idx = {img: idx for idx, img in enumerate(self.imgs)}
         self.author_to_imgs = {author: {img for img in self.imgs if self.imgs_to_author[img.stem] == author} for author in target_authors}
+
+        assert not self.preloaded or len(self.imgs) == len(self.imgs_preloaded), 'Preloaded images do not match'
 
 
 class IAM_eval(IAM_dataset):
