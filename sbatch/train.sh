@@ -11,4 +11,4 @@
 
 cd /work/FoMo_AIISDH/vpippi/Teddy || exit
 # scontrol update JobID="$SLURM_JOB_ID" name="teddy"
-srun /homes/$(whoami)/.conda/envs/teddy/bin/python train.py --batch_size 8 --root_path /home/vpippi/Teddy/files/datasets/ --datasets iam_lines_sm --dryrun --tag teddy_base --gen_emb_module OnehotModule
+srun /homes/$(whoami)/.conda/envs/teddy/bin/python train.py --batch_size 8 --root_path /home/vpippi/Teddy/files/datasets/ --datasets iam_lines_sm --wandb --tag teddy_base --gen_emb_module OnehotModule
