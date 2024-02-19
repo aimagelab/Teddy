@@ -17,7 +17,7 @@ from torch.cuda.amp import GradScaler
 from torchvision.utils import make_grid
 from einops import rearrange, repeat
 from tqdm import tqdm
-from torch.profiler import tensorboard_trace_handler
+from torchvision.transforms import functional as F
 
 from model.teddy import Teddy, freeze, unfreeze
 from generate_images import setup_loader, generate_images, Evaluator
@@ -67,9 +67,11 @@ def train(rank, args):
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
     print(f'Teddy has {count_parameters_in_millions(teddy):.2f} M parameters.')
 
-    optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
+    optimizer_dis = torch.optim.AdamW([
+        {'params': teddy.global_discriminator.parameters(), 'lr': args.lr_dis_global},
+        {'params': teddy.local_discriminator.parameters(), 'lr': args.lr_dis_local}
+    ])
     # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
-
     
     transformer_params = [param for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
     cnn_decoder_params = [param for name, param in teddy.generator.named_parameters() if 'cnn_decoder' in name]
@@ -182,15 +184,24 @@ def train(rank, args):
                 # Style loss
                 style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
                 style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
-                appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
-                collector['style_glob_loss', 'style_local_loss', 'appea_local_loss'] = style_glob_loss, style_local_loss, appea_local_loss
-                loss_gen += (style_glob_loss + style_local_loss) * args.weight_style + appea_local_loss * args.weight_appea
+                loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
+                collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
+
+                # Appearance loss
+                # appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
+                # loss_gen += appea_local_loss * args.weight_appea
+                # collector['appea_local_loss'] = appea_local_loss
 
                 # Reconstruction loss
-                min_width = min(preds['fakes_recon'].size(-1), batch['style_img'].size(-1))
-                recon_loss = recon_criterion(preds['fakes_recon'][..., :min_width], batch['style_img'][..., :min_width])
-                collector['recon_loss'] = recon_loss
-                loss_gen += recon_loss * args.weight_recon
+                if args.weight_recon > 0:
+                    if preds['fakes_recon'].size(-1) > batch['style_img'].size(-1):
+                        style_img = F.pad(batch['style_img'], (0, 0, preds['fakes_recon'].size(-1) - batch['style_img'].size(-1), 0), fill=1)
+                    else:
+                        style_img = batch['style_img'][..., :preds['fakes_recon'].size(-1)]
+                        
+                    recon_loss = recon_criterion(preds['fakes_recon'], style_img)
+                    collector['recon_loss'] = recon_loss
+                    loss_gen += recon_loss * args.weight_recon
 
                 collector['loss_gen'] = loss_gen
 
@@ -202,7 +213,7 @@ def train(rank, args):
             optimizer_ocr.zero_grad()
 
             if idx % args.dis_critic_num == 0:
-                with GradSwitch(teddy, teddy.discriminator):
+                with GradSwitch(teddy, teddy.global_discriminator, teddy.local_discriminator):
                     scaler.scale(loss_dis).backward(retain_graph=True)
             with GradSwitch(teddy, teddy.generator):
                 scaler.scale(loss_gen).backward(retain_graph=True)
@@ -231,7 +242,8 @@ def train(rank, args):
         if args.wandb and rank == 0:
             with torch.inference_mode():
                 img_grid = make_grid(preds['fakes'], nrow=1, normalize=True, value_range=(-1, 1))
-                img_grid_recon = make_grid(preds['fakes_recon'], nrow=1, normalize=True, value_range=(-1, 1))
+                if args.weight_recon > 0:
+                    img_grid_recon = make_grid(preds['fakes_recon'], nrow=1, normalize=True, value_range=(-1, 1))
 
                 fake = preds['fakes'][0].detach().cpu().permute(1, 2, 0).numpy()
                 fake_pred = teddy.text_converter.decode_batch(preds['ocr_fake_pred'])[0]
@@ -255,7 +267,8 @@ def train(rank, args):
             collector['time/epoch_inference'] = time.time() - epoch_start_time
             collector['ocr_loss_real'] = ocr_loss_real
         # collector['lr_dis', 'lr_gen'] = scheduler_dis.get_last_lr()[0], scheduler_gen.get_last_lr()[0]
-        collector['lr_dis', 'lr_gen_transformer', 'lr_gen_cnn_decoder'] = args.lr_dis, args.lr_gen_transformer, args.lr_gen_cnn_decoder
+        # collector['lr_gen_transformer', 'lr_gen_cnn_decoder'] = args.lr_gen_transformer, args.lr_gen_cnn_decoder
+        # collector['lr_dis_global', 'lr_dis_local'] = args.lr_dis_global, args.lr_dis_local
         collector += teddy.collector
         # if args.ddp:
         #     collector = gather_collectors(collector)
@@ -273,10 +286,16 @@ def train(rank, args):
                 'args': vars(args),
             }, dst)
 
-            evaluation_loader = setup_loader(rank, args, args.eval_dataset) if evaluation_loader else evaluation_loader
-            teddy.eval()
-            generate_images(rank, args, teddy, evaluation_loader)
-            collector['scores/HWD', 'scores/FID', 'scores/KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
+            # Evaluation
+            try:
+                evaluation_loader = setup_loader(rank, args, args.eval_dataset) if evaluation_loader else evaluation_loader
+                teddy.eval()
+                generate_images(rank, args, teddy, evaluation_loader)
+                collector['scores/HWD', 'scores/FID', 'scores/KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
+            except Exception as e:
+                print(f"Error during evaluation: {e}")
+            finally:
+                teddy.train()
 
         if args.wandb and rank == 0 and not args.dryrun:
             collector.print(f'Epoch {epoch} | ')
@@ -284,7 +303,7 @@ def train(rank, args):
                 'alphas': optimizer_ocr.last_alpha if hasattr(optimizer_ocr, 'last_alpha') else None,
                 'epoch': epoch,
                 'images/all': [wandb.Image(torch.cat([style_img, img_grid], dim=2), caption='real/fake')],
-                'images/all_recon': [wandb.Image(torch.cat([style_img, img_grid_recon], dim=2), caption='real/fake')],
+                'images/all_recon': [wandb.Image(torch.cat([style_img, img_grid_recon], dim=2), caption='real/fake')] if args.weight_recon > 0 else None,
                 'images/page': [wandb.Image(eval_page, caption='eval')],
                 'images/sample_fake': [wandb.Image(fake, caption=f"GT: {fake_gt}\nP: {fake_pred}")],
                 'images/sample_real': [wandb.Image(real, caption=f"GT: {real_gt}\nP: {real_pred}")],
@@ -324,14 +343,15 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     
 
 def add_arguments(parser):
-    parser.add_argument('--lr_gen_transformer', type=float, default=0.000001)
+    parser.add_argument('--lr_gen_transformer', type=float, default=0.00001)
     parser.add_argument('--lr_gen_cnn_decoder', type=float, default=0.0005)
-    parser.add_argument('--lr_dis', type=float, default=0.00005)
+    parser.add_argument('--lr_dis_global', type=float, default=0.00005)
+    parser.add_argument('--lr_dis_local', type=float, default=0.000001)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
-    parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
+    parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
     parser.add_argument('--resume', action='store_true', help="Resume")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
     parser.add_argument('--start_epochs', type=int, default=0, help="Start epochs")
@@ -395,8 +415,8 @@ def add_arguments(parser):
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")
     parser.add_argument('--dis_critic_num', type=int, default=2, help="Discriminator critic num")
-    parser.add_argument('--dis_patch_width', type=int, default=32, help="Discriminator patch width")
-    parser.add_argument('--dis_patch_count', type=int, default=8, help="Discriminator patch count")
+    parser.add_argument('--dis_patch_width', type=int, default=256, help="Discriminator patch width")
+    parser.add_argument('--dis_patch_count', type=int, default=1, help="Discriminator patch count")
 
     # Teddy style
     parser.add_argument('--style_patch_width', type=int, default=256, help="Style patch width")

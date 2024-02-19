@@ -55,6 +55,12 @@ class MedianRemove(object):
         img = img + (1 - median_values) * random.random()
         img = img.clamp(0, 1)
         return img, lbl
+    
+
+class RandomCrop(T.RandomCrop):
+    def __call__(self, sample):
+        img, lbl = sample
+        return super().__call__(img), lbl
 
 
 class PadNextDivisible(object):

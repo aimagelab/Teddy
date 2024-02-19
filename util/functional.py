@@ -68,9 +68,9 @@ class TextSampler:
 
 
 class GradSwitch:
-    def __init__(self, model, target_model):
+    def __init__(self, model, *target_models):
         self.model = model
-        self.target_model = target_model
+        self.target_models = target_models
 
     @staticmethod
     def _set_grad(model, requires_grad):
@@ -79,8 +79,8 @@ class GradSwitch:
 
     def __enter__(self):
         self._set_grad(self.model, False)
-        self._set_grad(self.target_model, True)
-        return self.target_model
+        for target_model in self.target_models:
+            self._set_grad(target_model, True)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._set_grad(self.model, True)

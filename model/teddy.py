@@ -117,6 +117,43 @@ class LearnedPositionalEncoding(nn.Module):
         return x
 
 
+class TeddyDiscriminator(nn.Module):
+    def __init__(self, image_size, patch_size, dim=512, depth=6, heads=8, mlp_dim=2048, channels=1, dropout=0.1):
+        super().__init__()
+        image_height, image_width = pair(image_size)
+        patch_height, patch_width = pair(patch_size)
+        self.patch_width = patch_width
+
+        patch_dim = channels * patch_height * patch_width
+        self.to_patch_embedding = nn.Sequential(
+            Rearrange('b c h (p pw) -> b p (h pw c)', pw=self.patch_width),
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim),
+            nn.LayerNorm(dim),
+        )
+
+        self.pos_encoding = LearnedPositionalEncoding(dim, max_len=image_width // patch_width * 2)
+        self.out_token = nn.Parameter(torch.randn(1, 1, dim))
+
+        transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
+        encoder_norm = nn.LayerNorm(dim)
+        self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth, norm=encoder_norm)
+
+        self.linear = nn.Linear(dim, 1)
+
+    def forward(self, src):
+        x = self.to_patch_embedding(src)
+        x = self.pos_encoding(x)
+        b, n, _ = x.shape
+
+        out_token = self.out_token.repeat(b, 1, 1)
+        x = torch.cat((out_token, x), dim=1)
+
+        x = self.transformer_encoder(x)
+        x = x[:, 0, :]
+        return self.linear(x)
+
+
 class TeddyGenerator(nn.Module):
     def __init__(self, image_size, patch_size, dim=512, depth=6, heads=8, mlp_dim=2048,
                  channels=3, num_style=3, dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}):
@@ -305,14 +342,16 @@ class Teddy(torch.nn.Module):
         self.text_converter = CTCLabelConverter(charset)
         self.ocr = OrigamiNet(o_classes=len(charset) + 1)
         self.style_encoder = FontSquareEncoder()
-        self.apperence_encoder = ImageNetEncoder()
+        # self.apperence_encoder = ImageNetEncoder()
 
         freeze(self.style_encoder)
         embedding_module_kwargs = {'charset': charset, 'transforms': UnifontShiftTransform(gen_emb_shift)}
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim,
                                         channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs,
                                         num_style=gen_glob_style_tokens)
-        self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1)
+        self.global_discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1)
+        self.local_discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), 
+                                                      dim=dis_dim, channels=img_channels)
 
         self.dis_patch_sampler = PatchSampler(dis_patch_width, dis_patch_count)
         self.style_patch_sampler = PatchSampler(style_patch_width, style_patch_count)
@@ -337,40 +376,48 @@ class Teddy(torch.nn.Module):
         real_style_emb, fake_recon_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
         fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
 
-        fakes_recon = self.generator.cnn_decoder(fake_recon_emb)
+        # Reconstruction
+        # results['fakes_recon'] = self.generator.cnn_decoder(fake_recon_emb)
 
-        dis_glob_real_pred = self.discriminator(batch['style_img'])
-        dis_glob_fake_pred = self.discriminator(fakes)
-
-        fake_style_emb, _ = self.generator.forward_style(fakes, enc_gen_text)
+        # Cycle consistency
+        results['fake_style_emb'], _ = self.generator.forward_style(fakes, enc_gen_text)
 
         gen_img_len = enc_gen_text_len * 16
         # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * 16
 
+        # Discriminator global
+        results['dis_glob_real_pred'] = self.global_discriminator(batch['style_img'])
+        results['dis_glob_fake_pred'] = self.global_discriminator(fakes)
+
+        # Discriminator local
         real_samples = self.dis_patch_sampler(batch['style_img'], img_len=batch['style_img_len'])
+        same_samples = self.dis_patch_sampler(batch['same_img'], img_len=batch['same_img_len'])
         fake_samples = self.dis_patch_sampler(fakes, img_len=gen_img_len)
-        dis_local_real_pred = self.discriminator(real_samples)
-        dis_local_fake_pred = self.discriminator(fake_samples)
+        results['dis_local_real_pred'] = self.local_discriminator(torch.cat([real_samples, same_samples], dim=-1))
+        results['dis_local_fake_pred'] = self.local_discriminator(torch.cat([real_samples, fake_samples], dim=-1))
 
         fakes_rgb = repeat(fakes, 'b 1 h w -> b 3 h w')
         real_rgb = repeat(batch['style_img'], 'b 1 h w -> b 3 h w')
         other_rgb = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
 
-        style_glob_fakes = self.style_encoder(fakes_rgb)
-        style_glob_negative = self.style_encoder(other_rgb)
-        style_glob_positive = self.style_encoder(real_rgb)
+        # Style global
+        results['style_glob_fakes'] = self.style_encoder(fakes_rgb)
+        results['style_glob_positive'] = self.style_encoder(real_rgb)
+        results['style_glob_negative'] = self.style_encoder(other_rgb)
 
-        real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
         fake_samples = self.style_patch_sampler(fakes_rgb, img_len=gen_img_len)
+        real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
         other_samples = self.style_patch_sampler(other_rgb, img_len=batch['other_img_len'])
 
-        style_local_real = self.style_encoder(real_samples)
-        style_local_fakes = self.style_encoder(fake_samples)
-        style_local_other = self.style_encoder(other_samples)
+        # Style local
+        results['style_local_fakes'] = self.style_encoder(fake_samples)
+        results['style_local_real'] = self.style_encoder(real_samples)
+        results['style_local_other'] = self.style_encoder(other_samples)
 
-        appea_local_real = self.apperence_encoder(real_samples)
-        appea_local_fakes = self.apperence_encoder(fake_samples)
-        appea_local_other = self.apperence_encoder(other_samples)
+        # Appearence
+        # results['appea_local_real'] = self.apperence_encoder(real_samples)
+        # results['appea_local_fakes'] = self.apperence_encoder(fake_samples)
+        # results['appea_local_other'] = self.apperence_encoder(other_samples)
 
         # TODO find a better way to pad the generated images
         # mask = torch.ones_like(fakes_rgb)
@@ -378,43 +425,27 @@ class Teddy(torch.nn.Module):
         #     mask[i, :, :, l:] = 0
         # masked_fakes_rgb = (fakes_rgb - 1) * mask + 1
 
-        ocr_fake_pred = self.ocr(fakes_rgb)
+        # OCR fake
+        results['ocr_fake_pred'] = self.ocr(fakes_rgb)
 
-        ocr_real_pred = None
+        # OCR real
+        results['ocr_real_pred'] = None
         if 'ocr_real_train' in batch and batch['ocr_real_train']:
-            ocr_real_pred = self.ocr(real_rgb)
+            results['ocr_real_pred'] = self.ocr(real_rgb)
         elif 'ocr_real_eval' in batch and batch['ocr_real_eval']:
             with torch.inference_mode():
-                ocr_real_pred = self.ocr(real_rgb)
+                results['ocr_real_pred'] = self.ocr(real_rgb)
 
-        results = {
+        results.update({
             'fakes': fakes,
-            'fakes_recon': fakes_recon,
-            'dis_glob_real_pred': dis_glob_real_pred,
-            'dis_glob_fake_pred': dis_glob_fake_pred,
-            'dis_local_real_pred': dis_local_real_pred,
-            'dis_local_fake_pred': dis_local_fake_pred,
-            # 'same_other_pred': same_other_pred,
-            'ocr_fake_pred': ocr_fake_pred,
-            'ocr_real_pred': ocr_real_pred,
             'real_style_emb': real_style_emb,
-            'fake_style_emb': fake_style_emb,
             'enc_gen_text': enc_gen_text,
             'enc_gen_text_len': enc_gen_text_len,
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
-            'style_local_fakes': style_local_fakes,
-            'style_local_real': style_local_real,
-            'style_local_other': style_local_other,
-            'appea_local_fakes': appea_local_fakes,
-            'appea_local_real': appea_local_real,
-            'appea_local_other': appea_local_other,
             'real_samples': real_samples,
             'fake_samples': fake_samples,
-            'style_glob_fakes': style_glob_fakes,
-            'style_glob_negative': style_glob_negative,
-            'style_glob_positive': style_glob_positive,
-        }
+        })
         return results
 
     def generate_eval_page(self, gen_text, style_text, style_img, max_batch_size=4):
