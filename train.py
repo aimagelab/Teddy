@@ -273,7 +273,7 @@ def train(rank, args):
         # if args.ddp:
         #     collector = gather_collectors(collector)
 
-        if rank == 0 and epoch % 25 == 0 and epoch > 0 and not args.dryrun:
+        if rank == 0 and epoch % args.save_interval == 0 and epoch > 0 and not args.dryrun:
             dst = args.checkpoint_path / f'{epoch:06d}_epochs.pth'
             dst.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
@@ -357,6 +357,7 @@ def add_arguments(parser):
     parser.add_argument('--start_epochs', type=int, default=0, help="Start epochs")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
     parser.add_argument('--epochs_size', type=int, default=1000, help="Epochs size")
+    parser.add_argument('--save_interval', type=int, default=25, help="Save interval")
     parser.add_argument('--world_size', type=int, default=1, help="World size")
     parser.add_argument('--checkpoint_path', type=str, default='files/checkpoints', help="Checkpoint path")
     parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")
