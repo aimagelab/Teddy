@@ -296,9 +296,9 @@ class IAM_eval(IAM_dataset):
         style_id = '-'.join(style_id)
 
         style_text = self.imgs_to_label[style_id]
-        style_img = self.imgs_preloaded[self.imgs_id_to_idx[style_id]] if self.preloaded else Image.open(self.imgs_id_to_path[style_id]) 
+        style_img = Image.open(self.imgs_id_to_path[style_id]) 
 
-        if self.pre_transform and not self.preloaded:
+        if self.pre_transform:
             style_img, _ = self.pre_transform((style_img, style_text))
         if self.post_transform:
             style_img, _ = self.post_transform((style_img, style_text))

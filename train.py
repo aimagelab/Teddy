@@ -153,6 +153,9 @@ def train(rank, args):
                     batch['gen_text'] = text_generator.sample([4] * len(batch['style_text']))
                 batch['weight'] = {k[7:]: v > 0 for k, v in vars(args).items() if k.startswith('weight')}
 
+                if args.no_style_text:
+                    batch['style_text'] = ['' for _ in batch['style_text']]
+
                 preds = teddy(batch)
 
                 loss_dis, loss_gen, loss_ocr = 0, 0, 0
@@ -386,6 +389,9 @@ def add_arguments(parser):
     parser.add_argument('--eval_epoch', type=int)
     parser.add_argument('--eval_batch_size', type=int, default=64)
                         
+    # Ablation
+    parser.add_argument('--no_style_text', action='store_true', help="No style text")
+    
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
     parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_sm',], help="Datasets")
