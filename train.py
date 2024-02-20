@@ -24,7 +24,7 @@ from generate_images import setup_loader, generate_images, Evaluator
 from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss, MaxMSELoss
-from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, TeddyDataParallel, ChunkLoader
+from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, WeightsScheduler, ChunkLoader
 
 
 def free_mem_percent():
@@ -67,10 +67,7 @@ def train(rank, args):
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
     print(f'Teddy has {count_parameters_in_millions(teddy):.2f} M parameters.')
 
-    optimizer_dis = torch.optim.AdamW([
-        {'params': teddy.global_discriminator.parameters(), 'lr': args.lr_dis_global},
-        {'params': teddy.local_discriminator.parameters(), 'lr': args.lr_dis_local}
-    ])
+    optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
     # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
     
     transformer_params = [param for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
@@ -80,6 +77,8 @@ def train(rank, args):
         {'params': cnn_decoder_params, 'lr': args.lr_gen_cnn_decoder}
     ])
     # scheduler_gen = torch.optim.lr_scheduler.ConstantLR(optimizer_gen, args.lr_gen)
+
+    weights_scheduler = WeightsScheduler(args, 'weight_ocr', args.scheduler_start, args.scheduler_lenght)
 
     match args.ocr_scheduler:
         case 'train': optimizer_ocr = torch.optim.AdamW(teddy.ocr.parameters(), lr=0.0001)
@@ -119,7 +118,8 @@ def train(rank, args):
     recon_criterion = torch.nn.MSELoss()
 
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
-    text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=args.gen_text_line_len)
+    import string
+    text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=None, charset=set(string.ascii_lowercase))
 
     if args.wandb and rank == 0 and not args.dryrun:
         name = f"{args.run_id}_{args.tag}"
@@ -131,6 +131,9 @@ def train(rank, args):
     for epoch in range(args.start_epochs, args.epochs):
         teddy.train()
         epoch_start_time = time.time()
+        
+        weights_scheduler.step(epoch)
+        collector.update({k:v for k, v in vars(args).items() if k.startswith('weight')})
 
         clock_verbose = False
         clock = Clock(collector, 'time/data_load', clock_verbose)
@@ -143,54 +146,66 @@ def train(rank, args):
                 clock.stop()  # time/data_load
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                gen_text = text_generator.sample(len(batch['style_img']))
-                batch['gen_text'] = [g if random.random() > args.gen_same_text_ratio else s for s, g in zip(batch['style_text'], gen_text)]
+                if args.weight_dis > 0:
+                    gen_text = text_generator.sample([len(t.split()) for t in batch['style_text']])
+                    batch['gen_text'] = [g if random.random() > args.gen_same_text_ratio else s for s, g in zip(batch['style_text'], gen_text)]
+                else:
+                    batch['gen_text'] = text_generator.sample([4] * len(batch['style_text']))
+                batch['weight'] = {k[7:]: v > 0 for k, v in vars(args).items() if k.startswith('weight')}
 
                 preds = teddy(batch)
 
+                loss_dis, loss_gen, loss_ocr = 0, 0, 0
+
                 # Discriminator loss
-                if idx % args.dis_critic_num == 0:
+                if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
                     dis_glob_loss_real, dis_glob_loss_fake = hinge_criterion.discriminator(preds['dis_glob_fake_pred'], preds['dis_glob_real_pred'])
                     dis_local_loss_real, dis_local_loss_fake = hinge_criterion.discriminator(preds['dis_local_fake_pred'], preds['dis_local_real_pred'])
-                    loss_dis = (dis_glob_loss_real + dis_glob_loss_fake + dis_local_loss_fake + dis_local_loss_real) * args.weight_dis
+                    loss_dis += (dis_glob_loss_real + dis_glob_loss_fake + dis_local_loss_fake + dis_local_loss_real) * args.weight_dis
                     collector['loss_dis', 'dis_glob_loss_real', 'dis_glob_loss_fake'] = loss_dis, dis_glob_loss_real, dis_glob_loss_fake
                     collector['dis_local_loss_real', 'dis_local_loss_fake'] = dis_local_loss_real, dis_local_loss_fake
 
                 # Generator loss
-                gen_glob_loss_fake = hinge_criterion.generator(preds['dis_glob_fake_pred'])
-                gen_local_loss_fake = hinge_criterion.generator(preds['dis_local_fake_pred'])
-                collector['gen_glob_loss_fake', 'gen_local_loss_fake'] = gen_glob_loss_fake, gen_local_loss_fake
-                loss_gen = (gen_glob_loss_fake + gen_local_loss_fake) * args.weight_gen
+                if args.weight_gen > 0:
+                    gen_glob_loss_fake = hinge_criterion.generator(preds['dis_glob_fake_pred'])
+                    gen_local_loss_fake = hinge_criterion.generator(preds['dis_local_fake_pred'])
+                    collector['gen_glob_loss_fake', 'gen_local_loss_fake'] = gen_glob_loss_fake, gen_local_loss_fake
+                    loss_gen += (gen_glob_loss_fake + gen_local_loss_fake) * args.weight_gen
 
-                # OCR loss
-                preds_size = torch.IntTensor([preds['ocr_fake_pred'].size(1)] * args.batch_size).to(device)
-                preds['ocr_fake_pred'] = preds['ocr_fake_pred'].permute(1, 0, 2).log_softmax(2)
-                ocr_loss_fake = ctc_criterion(preds['ocr_fake_pred'], preds['enc_gen_text'], preds_size, preds['enc_gen_text_len'])
-                collector['ocr_loss_fake'] = ocr_loss_fake
-                loss_gen += ocr_loss_fake * args.weight_ocr
+                # OCR loss fake
+                if args.weight_ocr > 0:
+                    preds_size = torch.IntTensor([preds['ocr_fake_pred'].size(1)] * args.batch_size).to(device)
+                    preds['ocr_fake_pred'] = preds['ocr_fake_pred'].permute(1, 0, 2).log_softmax(2)
+                    ocr_loss_fake = ctc_criterion(preds['ocr_fake_pred'], preds['enc_gen_text'], preds_size, preds['enc_gen_text_len'])
+                    collector['ocr_loss_fake'] = ocr_loss_fake
+                    loss_gen += ocr_loss_fake * args.weight_ocr
 
-                # Cycle loss
-                cycle_loss = cycle_criterion(preds['real_style_emb'], preds['fake_style_emb'])
-                collector['cycle_loss'] = cycle_loss
-                loss_gen += cycle_loss * args.weight_cycle
-
-                if batch['ocr_real_train']:
+                # OCR loss real
+                if batch['ocr_real_train'] and args.weight_ocr > 0:
                     preds_size = torch.IntTensor([preds['ocr_real_pred'].size(1)] * args.batch_size).to(device)
                     preds['ocr_real_pred'] = preds['ocr_real_pred'].permute(1, 0, 2).log_softmax(2)
                     ocr_loss_real = ctc_criterion(preds['ocr_real_pred'], preds['enc_style_text'], preds_size, preds['enc_style_text_len'])
                     collector['ocr_loss_real'] = ocr_loss_real
-                    loss_ocr = ocr_loss_real * args.weight_ocr
+                    loss_ocr += ocr_loss_real * args.weight_ocr
+
+                # Cycle loss
+                if args.weight_cycle > 0:
+                    cycle_loss = cycle_criterion(preds['real_style_emb'], preds['fake_style_emb'])
+                    collector['cycle_loss'] = cycle_loss
+                    loss_gen += cycle_loss * args.weight_cycle
 
                 # Style loss
-                style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
-                style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
-                loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
-                collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
+                if args.weight_style > 0:
+                    style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
+                    style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
+                    loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
+                    collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
 
                 # Appearance loss
-                # appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
-                # loss_gen += appea_local_loss * args.weight_appea
-                # collector['appea_local_loss'] = appea_local_loss
+                if args.weight_appea > 0:
+                    appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
+                    loss_gen += appea_local_loss * args.weight_appea
+                    collector['appea_local_loss'] = appea_local_loss
 
                 # Reconstruction loss
                 if args.weight_recon > 0:
@@ -212,8 +227,8 @@ def train(rank, args):
             optimizer_gen.zero_grad()
             optimizer_ocr.zero_grad()
 
-            if idx % args.dis_critic_num == 0:
-                with GradSwitch(teddy, teddy.global_discriminator, teddy.local_discriminator):
+            if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
+                with GradSwitch(teddy, teddy.discriminator, teddy.discriminator):
                     scaler.scale(loss_dis).backward(retain_graph=True)
             with GradSwitch(teddy, teddy.generator):
                 scaler.scale(loss_gen).backward(retain_graph=True)
@@ -225,7 +240,7 @@ def train(rank, args):
             collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
             collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
 
-            if idx % args.dis_critic_num == 0:
+            if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
             if batch['ocr_real_train']:
@@ -242,6 +257,7 @@ def train(rank, args):
         if args.wandb and rank == 0:
             with torch.inference_mode():
                 img_grid = make_grid(preds['fakes'], nrow=1, normalize=True, value_range=(-1, 1))
+
                 if args.weight_recon > 0:
                     img_grid_recon = make_grid(preds['fakes_recon'], nrow=1, normalize=True, value_range=(-1, 1))
 
@@ -343,12 +359,11 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     
 
 def add_arguments(parser):
-    parser.add_argument('--lr_gen_transformer', type=float, default=0.00001)
+    parser.add_argument('--lr_gen_transformer', type=float, default=0.000001)
     parser.add_argument('--lr_gen_cnn_decoder', type=float, default=0.0005)
-    parser.add_argument('--lr_dis_global', type=float, default=0.00005)
-    parser.add_argument('--lr_dis_local', type=float, default=0.000001)
+    parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
     parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
@@ -389,14 +404,16 @@ def add_arguments(parser):
     parser.add_argument('--ocr_scheduler', type=str, default='alt3', help="OCR scheduler")
 
     # Teddy loss
-    parser.add_argument('--weight_ocr', type=float, default=1.5, help="OCR loss weight")
-    parser.add_argument('--weight_dis', type=float, default=1.0, help="Discriminator loss weight")
-    parser.add_argument('--weight_gen', type=float, default=1.0, help="Generator loss weight")
-    parser.add_argument('--weight_style', type=float, default=2.0, help="Style loss weight")
-    parser.add_argument('--weight_appea', type=float, default=3.0, help="Appearance loss weight")
-    parser.add_argument('--weight_cycle', type=float, default=1.0, help="Cycle loss weight")
-    parser.add_argument('--weight_recon', type=float, default=1.0, help="Reconstruction loss weight")
-
+    parser.add_argument('--weight_gen', '--wg', type=float, default=1.0, help="Generator loss weight")
+    parser.add_argument('--weight_dis', '--wd', type=float, default=1.0, help="Discriminator loss weight")
+    parser.add_argument('--weight_ocr', '--wo', type=float, default=1.0, help="OCR loss weight")
+    parser.add_argument('--weight_style', '--ws', type=float, default=1.0, help="Style loss weight")
+    parser.add_argument('--weight_appea', '--wa', type=float, default=0.0, help="Appearance loss weight")
+    parser.add_argument('--weight_cycle', '--wc', type=float, default=1.0, help="Cycle loss weight")
+    parser.add_argument('--weight_recon', '--wr', type=float, default=0.0, help="Reconstruction loss weight")
+    parser.add_argument('--scheduler_start', type=int, help="Weight scheduler start")
+    parser.add_argument('--scheduler_lenght', type=int, default=10, help="Weight scheduler length")
+    
     # Teddy generator
     parser.add_argument('--gen_dim', type=int, default=512, help="Model dimension")
     parser.add_argument('--gen_max_width', type=int, default=608, help="Max width")
@@ -404,7 +421,7 @@ def add_arguments(parser):
     parser.add_argument('--gen_expansion_factor', type=int, default=1, help="Expansion factor")
     parser.add_argument('--gen_text_line_len', type=int, default=24, help="Text line len")
     parser.add_argument('--gen_same_text_ratio', type=float, default=0.5, help="Same text ratio")
-    parser.add_argument('--gen_emb_module', type=str, default='UnifontModule', help="Embedding module")
+    parser.add_argument('--gen_emb_module', type=str, default='OnehotModule', help="Embedding module")
     parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
     parser.add_argument('--gen_glob_style_tokens', type=int, default=3, help="Text line len")
 
@@ -416,8 +433,8 @@ def add_arguments(parser):
     # Teddy discriminator
     parser.add_argument('--dis_dim', type=int, default=512, help="Model dimension")
     parser.add_argument('--dis_critic_num', type=int, default=2, help="Discriminator critic num")
-    parser.add_argument('--dis_patch_width', type=int, default=256, help="Discriminator patch width")
-    parser.add_argument('--dis_patch_count', type=int, default=1, help="Discriminator patch count")
+    parser.add_argument('--dis_patch_width', type=int, default=32, help="Discriminator patch width")
+    parser.add_argument('--dis_patch_count', type=int, default=8, help="Discriminator patch count")
 
     # Teddy style
     parser.add_argument('--style_patch_width', type=int, default=256, help="Style patch width")

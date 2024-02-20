@@ -5,6 +5,7 @@ from collections import Counter
 import time
 import math
 import numpy as np
+import nltk
 
 
 def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
@@ -24,44 +25,63 @@ def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
 
 
 class TextSampler:
-    def __init__(self, corpus, min_len, max_len, exponent=0.5):
+    def __init__(self, corpus, min_len, max_len, exponent=0.5, charset=None):
         self.min_len = min_len
         self.max_len = max_len
         self.words = [word for line in corpus for word in line.split()]
-        unigram_long_text = ''.join(self.words)
-        self.unigram_counts = Counter(unigram_long_text)
-        self.unigram_counts = {k: len(unigram_long_text) / v ** exponent for k, v in self.unigram_counts.items()}
+        self.words += nltk.corpus.abc.words()
+        self.words += nltk.corpus.brown.words()
+        self.words += nltk.corpus.genesis.words()
+        self.words += nltk.corpus.inaugural.words()
+        self.words += nltk.corpus.state_union.words()
+        self.words += nltk.corpus.webtext.words()
 
-        bigram_long_text = ' '.join(['', *corpus, ''])
-        bigram_long_text = [''.join(pair) for pair in pairwise(bigram_long_text)]
-        self.bigram_counts = Counter(bigram_long_text)
-        self.bigram_counts = {k: len(bigram_long_text) / v ** exponent for k, v in self.bigram_counts.items()}
+        if charset is not None:
+            self.words = [word for word in self.words if all([c in charset for c in word])]
 
-        self.words_weights = [self.eval_word(word) for word in self.words]
-        self.avg_word_width = sum([len(word) for word in self.words]) / len(self.words)
-        self.words_per_line = math.floor(self.max_len / self.avg_word_width)
+        random.shuffle(self.words)
+        self.words_weights = [1.0, ] * len(self.words)
+
+        self.idx = 0
+
+        # unigram_long_text = ''.join(self.words)
+        # self.unigram_counts = Counter(unigram_long_text)
+        # self.unigram_counts = {k: len(unigram_long_text) / v ** exponent for k, v in self.unigram_counts.items()}
+
+        # bigram_long_text = ' ' + ' '.join(self.words) + ' '
+        # bigram_long_text = [''.join(pair) for pair in pairwise(bigram_long_text)]
+        # self.bigram_counts = Counter(bigram_long_text)
+        # self.bigram_counts = {k: len(bigram_long_text) / v ** exponent for k, v in self.bigram_counts.items()}
+
+        # self.words_weights = [self.eval_word(word) for word in self.words]
 
     def eval_word(self, word):
-        bigrams = list(pairwise([' ', *word, ' ']))
+        bigrams = list(pairwise(f' {word} '))
         unigram_score = sum([self.unigram_counts[c] for c in word]) / len(word)
         bigram_score = sum([self.bigram_counts[''.join(b)] for b in bigrams]) / len(bigrams)
         return (unigram_score + bigram_score) / 2
+    
+    def random_choices(self, count):
+        # return random.choices(self.words, weights=self.words_weights, k=count)
+        assert count <= len(self.words)
+        idx = self.idx % len(self.words)
+        self.idx += count
+        return self.words[idx:idx + count]
 
-    def sample(self, batch_size):
-        random_words = random.choices(self.words, weights=self.words_weights, k=self.words_per_line * batch_size)
-        bins = [[] for _ in range(batch_size)]
-        while random_words:
-            word = random_words.pop()
-            # smallest_bin = np.argmin([sum(len(w) for w in bin) for bin in bins])
-            random_bin_idx = random.randint(0, len(bins) - 1)
-            bins[random_bin_idx].append(word)
+    def sample(self, batch_lengths):
+        words_count = sum(batch_lengths)
+        random_words = self.random_choices(words_count)
+        bins = [[] for _ in batch_lengths]
+        for idx, sentence_lenght in enumerate(batch_lengths):
+            for _ in range(sentence_lenght):
+                bins[idx].append(random_words.pop())
         sampled_lines = [' '.join(line) for line in bins]
 
         clamped_lines = []
         for line in sampled_lines:
-            if len(line) < self.min_len:
+            if self.min_len is not None and len(line) < self.min_len:
                 line = line + (' ' * (self.min_len - len(line)))
-            if len(line) > self.max_len:
+            if self.max_len is not None and len(line) > self.max_len:
                 line = line[:self.max_len]
             clamped_lines.append(line)
         return clamped_lines
@@ -124,6 +144,11 @@ class MetricCollector:
         new = MetricCollector()
         new.data = self.data | other.data
         return new
+    
+    def update(self, other):
+        assert isinstance(other, dict)
+        for k, v in other.items():
+            self._single_setitem(k, v)
 
     def reset(self):
         self.data = {}
@@ -230,3 +255,21 @@ class FakeScaler:
 
     def zero_grad(self):
         pass
+
+
+class WeightsScheduler:
+    def __init__(self, args, target_weight, start_epoch, length):
+        self.weights = {k:v for k, v in vars(args).items() if k.startswith('weight')}
+        self.target_weight = target_weight
+        self.start_epoch = start_epoch
+        self.length = length
+        self.args = args
+
+    def step(self, epoch):
+        if self.start_epoch is None or self.length is None:
+            return
+        alpha = min(1, max(0, (epoch - self.start_epoch) / self.length))
+
+        for k in self.weights:
+            if k != self.target_weight:
+                vars(self.args)[k] = alpha * self.weights[k]
