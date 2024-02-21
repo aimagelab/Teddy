@@ -215,7 +215,7 @@ class TeddyGenerator(nn.Module):
         decoder_norm = nn.LayerNorm(dim)
 
         self.transformer_encoder = nn.TransformerEncoder(transformer_encoder_layer, num_layers=depth, norm=encoder_norm)
-        # self.transformer_style_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
+        self.transformer_style_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
         self.transformer_gen_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
 
         self.cnn_decoder = VariationalDecoder(in_dim=dim, out_dim=channels)
@@ -227,20 +227,18 @@ class TeddyGenerator(nn.Module):
         b, n, _ = x.shape
 
         x = self.img_pos_encoding(x)
+        memory = self.transformer_encoder(x)
+
+        style_tgt = self.style_embedding(style_tgt)
+        style_tgt = self.style_pos_encoding(style_tgt)
+        style_tgt_len = style_tgt.size(1)
 
         style_tokens = self.style_tokens.repeat(b, 1, 1)
         style_tokens_len = style_tokens.size(1)
-        style_tgt = torch.cat((style_tokens, x), dim=1)
+        style_tgt = torch.cat((style_tokens, style_tgt), dim=1)
+        style_memory = self.transformer_style_decoder(style_tgt, memory)
 
-        memory = self.transformer_encoder(style_tgt)
-
-        # style_tgt = self.style_embedding(style_tgt)
-        # style_tgt = self.style_pos_encoding(style_tgt)
-        # style_tgt_len = style_tgt.size(1)
-
-        # style_memory = self.transformer_style_decoder(style_tgt, memory)
-
-        return memory.split((style_tokens_len, n), dim=1)
+        return style_memory.split((style_tokens_len, style_tgt_len), dim=1)
 
     def forward_gen(self, style_memory, gen_tgt):
         gen_tgt = self.gen_embedding(gen_tgt)
