@@ -7,6 +7,12 @@ import math
 import numpy as np
 import nltk
 
+nltk.download('abc')
+nltk.download('brown')
+nltk.download('genesis')
+nltk.download('inaugural')
+nltk.download('state_union')
+nltk.download('webtext')
 
 def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
     "Collect data into non-overlapping fixed-length chunks or blocks"
