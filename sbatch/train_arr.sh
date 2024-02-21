@@ -11,4 +11,5 @@
 
 cd /work/FoMo_AIISDH/vpippi/Teddy || exit
 # scontrol update JobID="$SLURM_JOB_ID" name="teddy"
+/homes/$(whoami)/.conda/envs/teddy/bin/python -m nltk.downloader all
 srun /homes/$(whoami)/.conda/envs/teddy/bin/python train.py --wandb --root_path /work/FoMo_AIISDH/vpippi/Teddy/files/datasets --batch_size 16 --tag def2 --resume --run_id b4ce
