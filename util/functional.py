@@ -63,10 +63,12 @@ class TextSampler:
     
     def random_choices(self, count):
         # return random.choices(self.words, weights=self.words_weights, k=count)
-        assert count <= len(self.words)
-        idx = self.idx % len(self.words)
+        if self.idx + count > len(self.words):
+            self.idx = 0
+            random.shuffle(self.words)
+        start_idx = self.idx
         self.idx += count
-        return self.words[idx:idx + count]
+        return self.words[start_idx:self.idx]
 
     def sample(self, batch_lengths):
         words_count = sum(batch_lengths)
