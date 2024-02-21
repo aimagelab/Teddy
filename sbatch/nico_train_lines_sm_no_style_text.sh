@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --gres=gpu:1
-#SBATCH --partition=all_usr_prod
+#SBATCH --partition=boost_usr_prod
 #SBATCH -e /work/FoMo_AIISDH/vpippi/Teddy/jobs/teddy_%j.err
 #SBATCH -o /work/FoMo_AIISDH/vpippi/Teddy/jobs/teddy_%j.out
 #SBATCH --mem=64G
