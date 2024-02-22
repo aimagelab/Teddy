@@ -7,12 +7,13 @@ import math
 import numpy as np
 import nltk
 
-nltk.download('abc')
-nltk.download('brown')
-nltk.download('genesis')
-nltk.download('inaugural')
-nltk.download('state_union')
-nltk.download('webtext')
+def nltk_download():
+    nltk.download('abc', quiet=True)
+    nltk.download('brown', quiet=True)
+    nltk.download('genesis', quiet=True)
+    nltk.download('inaugural', quiet=True)
+    nltk.download('state_union', quiet=True)
+    nltk.download('webtext', quiet=True)
 
 def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
     "Collect data into non-overlapping fixed-length chunks or blocks"
@@ -32,6 +33,8 @@ def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
 
 class TextSampler:
     def __init__(self, corpus, min_len, max_len, exponent=0.5, charset=None):
+        nltk_download()
+
         self.min_len = min_len
         self.max_len = max_len
         self.words = [word for line in corpus for word in line.split()]

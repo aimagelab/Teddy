@@ -17,6 +17,7 @@ from torch.nn.functional import pad
 from einops import rearrange
 from datasets import transforms as T
 from datasets.transforms import ToTensor
+from itertools import compress
 
 
 def get_alphabet(labels):
@@ -150,7 +151,7 @@ class Base_dataset(Dataset):
         print(f'Dataset saved to {path}')
 
 class IAM_dataset(Base_dataset):
-    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preload=False, pkl_path=None, **kwargs):
+    def __init__(self, path, nameset=None, transform=T.ToTensor(), max_width=None, max_height=None, dataset_type='lines', preload=False, pkl_path=None, min_text_width=None, **kwargs):
         super().__init__(path, nameset, transform, pkl_path)
         self.dataset_type = dataset_type
 
@@ -164,6 +165,12 @@ class IAM_dataset(Base_dataset):
 
             img_sizes_path = Path(path, f'img_sizes_{dataset_type}.msgpack')
             self.imgs_to_sizes = self.load_img_sizes(img_sizes_path)
+
+        if min_text_width:
+            mask = [len(self.imgs_to_label[img.stem]) >= min_text_width for img in self.imgs]
+            self.imgs = list(compress(self.imgs, mask))
+            if self.preloaded:
+                self.imgs_preloaded = list(compress(self.imgs_preloaded, mask))
 
         if pkl_path is not None and not pkl_path.exists():
             self.save_pickle(pkl_path)
@@ -271,6 +278,7 @@ class IAM_eval(IAM_dataset):
         kwargs['nameset'] = 'all'
         kwargs['max_width'] = None
         kwargs['max_height'] = None
+        kwargs['pkl_path'] = None
         super().__init__(*args, **kwargs)
 
         with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
@@ -317,7 +325,7 @@ class IAM_eval(IAM_dataset):
 
 
 class Msgpack_dataset(Base_dataset):
-    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False, pkl_path=None, **kwargs):
+    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False, pkl_path=None, author_code='unknown', **kwargs):
         super().__init__(path, nameset, transform, pkl_path)
 
         if pkl_path is None or not pkl_path.exists():
@@ -328,7 +336,7 @@ class Msgpack_dataset(Base_dataset):
                 data = msgpack.load(f)
 
             self.imgs_to_label = {Path(filename).stem: label for filename, label, *_ in data}
-            self.imgs_to_author = {Path(filename).stem: '000' for filename, *_ in data}
+            self.imgs_to_author = {Path(filename).stem: author_code for filename, *_ in data}
 
             self.imgs = [Path(path, 'lines') / filename for filename, *_ in data]
             assert len(self.imgs) > 0, f'No images found in {path}'
@@ -358,47 +366,47 @@ class Msgpack_dataset(Base_dataset):
 
 class Norhand_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='norhand', **kwargs)
 
 
 class Rimes_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='rimes', **kwargs)
 
 
 class ICFHR16_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='icfh16', **kwargs)
 
 
 class ICFHR14_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='icfh14', **kwargs)
 
 
 class LAM_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='lam', **kwargs)
 
 
 class Rodrigo_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='rodrigo', **kwargs)
 
 
 class SaintGall_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='saintgall', **kwargs)
 
 
 class Washington_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='washington', **kwargs)
 
 
 class Leopardi_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, author_code='leopardi', **kwargs)
 
 
 class MergedDataset(Dataset):
@@ -496,6 +504,8 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
         kwargs.update(glob_kwargs)
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', **kwargs))
+        elif name.lower() == 'iam_words_w3':
+            datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', min_text_width=3, **kwargs))
         elif name.lower() == 'iam_eval':
             datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_eval_words':

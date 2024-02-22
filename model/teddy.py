@@ -376,6 +376,12 @@ class Teddy(torch.nn.Module):
         real_style_emb, fake_recon_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
         fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
 
+        # rand_indices = torch.randperm(len(batch['style_img']))
+        # batch['other_img'] = batch['other_img'][rand_indices]
+        # batch['other_img_len'] = batch['other_img_len'][rand_indices]
+        # batch['other_text'] = [batch['other_text'][i] for i in rand_indices]
+        # batch['other_author'] = [batch['other_author'][i] for i in rand_indices]
+
         # Reconstruction
         if batch['weight']['recon']:
             results['fakes_recon'] = self.generator.cnn_decoder(fake_recon_emb)
@@ -385,37 +391,41 @@ class Teddy(torch.nn.Module):
             results['fake_style_emb'], _ = self.generator.forward_style(fakes, enc_gen_text)
 
         # Discriminator
-        if batch['weight']['dis']:
+        if batch['weight']['dis_global']:
             results['dis_glob_real_pred'] = self.discriminator(self.padding_cat(batch['style_img'], batch['same_img']))
             results['dis_glob_fake_pred'] = self.discriminator(self.padding_cat(batch['style_img'], fakes))
 
+        if batch['weight']['dis_local']:
             real_samples = self.dis_patch_sampler(batch['style_img'], img_len=batch['style_img_len'])
             same_samples = self.dis_patch_sampler(batch['same_img'], img_len=batch['same_img_len'])
             fake_samples = self.dis_patch_sampler(fakes, img_len=gen_img_len)
             results['dis_local_real_pred'] = self.discriminator(self.padding_cat(real_samples, same_samples))
             results['dis_local_fake_pred'] = self.discriminator(self.padding_cat(real_samples, fake_samples))
 
-        if batch['weight']['ocr'] or batch['weight']['style'] or batch['weight']['appea']:
+        # Style, Appearence, OCR
+        if batch['weight']['ocr'] or batch['weight']['style_global'] or batch['weight']['style_local'] or batch['weight']['appea_local']:
             fakes_rgb = repeat(fakes, 'b 1 h w -> b 3 h w')
             real_rgb = repeat(batch['style_img'], 'b 1 h w -> b 3 h w')
             other_rgb = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
 
+        if batch['weight']['style_local'] or batch['weight']['appea_local']:
             fake_samples = self.style_patch_sampler(fakes_rgb, img_len=gen_img_len)
             real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
             other_samples = self.style_patch_sampler(other_rgb, img_len=batch['other_img_len'])
 
         # Style
-        if batch['weight']['style']:
+        if batch['weight']['style_global']:
             results['style_glob_fakes'] = self.style_encoder(fakes_rgb)
             results['style_glob_positive'] = self.style_encoder(real_rgb)
             results['style_glob_negative'] = self.style_encoder(other_rgb)
 
+        if batch['weight']['style_local']:
             results['style_local_fakes'] = self.style_encoder(fake_samples)
             results['style_local_real'] = self.style_encoder(real_samples)
             results['style_local_other'] = self.style_encoder(other_samples)
 
         # Appearence
-        if batch['weight']['appea']:
+        if batch['weight']['appea_local']:
             results['appea_local_real'] = self.apperence_encoder(real_samples)
             results['appea_local_fakes'] = self.apperence_encoder(fake_samples)
             results['appea_local_other'] = self.apperence_encoder(other_samples)
@@ -438,8 +448,6 @@ class Teddy(torch.nn.Module):
             'enc_gen_text_len': enc_gen_text_len,
             'enc_style_text': enc_style_text,
             'enc_style_text_len': enc_style_text_len,
-            'real_samples': real_samples,
-            'fake_samples': fake_samples,
         })
         return results
 

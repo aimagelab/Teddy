@@ -141,12 +141,12 @@ def train(rank, args):
 
         for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
             batch['ocr_real_train'] = args.ocr_scheduler == 'train'
-            batch['ocr_real_eval'] = idx == len(loader) - 1
+            batch['ocr_real_eval'] = idx == len(loader) - 1 or args.ocr_real
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 clock.stop()  # time/data_load
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                if args.weight_dis > 0:
+                if args.weight_dis_global > 0 or args.weight_dis_local > 0:
                     gen_text = text_generator.sample([len(t.split()) for t in batch['style_text']])
                     batch['gen_text'] = [g if random.random() > args.gen_same_text_ratio else s for s, g in zip(batch['style_text'], gen_text)]
                 else:
@@ -161,19 +161,24 @@ def train(rank, args):
                 loss_dis, loss_gen, loss_ocr = 0, 0, 0
 
                 # Discriminator loss
-                if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
+                if idx % args.dis_critic_num == 0 and args.weight_dis_global > 0:
                     dis_glob_loss_real, dis_glob_loss_fake = hinge_criterion.discriminator(preds['dis_glob_fake_pred'], preds['dis_glob_real_pred'])
+                    collector['dis_glob_loss_real', 'dis_glob_loss_fake'] = dis_glob_loss_real, dis_glob_loss_fake
+                    loss_dis += (dis_glob_loss_real + dis_glob_loss_fake) * args.weight_dis_global
+                if idx % args.dis_critic_num == 0 and args.weight_dis_local > 0:
                     dis_local_loss_real, dis_local_loss_fake = hinge_criterion.discriminator(preds['dis_local_fake_pred'], preds['dis_local_real_pred'])
-                    loss_dis += (dis_glob_loss_real + dis_glob_loss_fake + dis_local_loss_fake + dis_local_loss_real) * args.weight_dis
-                    collector['loss_dis', 'dis_glob_loss_real', 'dis_glob_loss_fake'] = loss_dis, dis_glob_loss_real, dis_glob_loss_fake
                     collector['dis_local_loss_real', 'dis_local_loss_fake'] = dis_local_loss_real, dis_local_loss_fake
+                    loss_dis += (dis_local_loss_real + dis_local_loss_fake) * args.weight_dis_local
 
                 # Generator loss
-                if args.weight_gen > 0:
+                if args.weight_gen_global > 0:
                     gen_glob_loss_fake = hinge_criterion.generator(preds['dis_glob_fake_pred'])
+                    collector['gen_glob_loss_fake'] = gen_glob_loss_fake
+                    loss_gen += gen_glob_loss_fake * args.weight_gen_global
+                if args.weight_gen_local > 0:
                     gen_local_loss_fake = hinge_criterion.generator(preds['dis_local_fake_pred'])
-                    collector['gen_glob_loss_fake', 'gen_local_loss_fake'] = gen_glob_loss_fake, gen_local_loss_fake
-                    loss_gen += (gen_glob_loss_fake + gen_local_loss_fake) * args.weight_gen
+                    collector['gen_local_loss_fake'] = gen_local_loss_fake
+                    loss_gen += gen_local_loss_fake * args.weight_gen_local
 
                 # OCR loss fake
                 if args.weight_ocr > 0:
@@ -198,14 +203,17 @@ def train(rank, args):
                     loss_gen += cycle_loss * args.weight_cycle
 
                 # Style loss
-                if args.weight_style > 0:
+                if args.weight_style_global > 0:
                     style_glob_loss = style_criterion(preds['style_glob_fakes'], preds['style_glob_positive'], preds['style_glob_negative'])
+                    collector['style_glob_loss'] = style_glob_loss
+                    loss_gen += style_glob_loss * args.weight_style_global
+                if args.weight_style_local > 0:
                     style_local_loss = style_criterion(preds['style_local_fakes'], preds['style_local_real'], preds['style_local_other'])
-                    loss_gen += (style_glob_loss + style_local_loss) * args.weight_style
-                    collector['style_glob_loss', 'style_local_loss'] = style_glob_loss, style_local_loss
+                    collector['style_local_loss'] = style_local_loss
+                    loss_gen += style_local_loss * args.weight_style_local
 
                 # Appearance loss
-                if args.weight_appea > 0:
+                if args.weight_appea_local > 0:
                     appea_local_loss = style_criterion(preds['appea_local_fakes'], preds['appea_local_real'], preds['appea_local_other'])
                     loss_gen += appea_local_loss * args.weight_appea
                     collector['appea_local_loss'] = appea_local_loss
@@ -221,7 +229,10 @@ def train(rank, args):
                     collector['recon_loss'] = recon_loss
                     loss_gen += recon_loss * args.weight_recon
 
+                if idx % args.dis_critic_num == 0:
+                    collector['loss_dis'] = loss_dis
                 collector['loss_gen'] = loss_gen
+                collector['loss_ocr'] = loss_ocr
 
                 clock.start()  # time/data_load
 
@@ -230,7 +241,7 @@ def train(rank, args):
             optimizer_gen.zero_grad()
             optimizer_ocr.zero_grad()
 
-            if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
+            if idx % args.dis_critic_num == 0 and (args.weight_dis_global > 0 or args.weight_dis_local > 0):
                 with GradSwitch(teddy, teddy.discriminator, teddy.discriminator):
                     scaler.scale(loss_dis).backward(retain_graph=True)
             with GradSwitch(teddy, teddy.generator):
@@ -243,7 +254,7 @@ def train(rank, args):
             collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
             collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
 
-            if idx % args.dis_critic_num == 0 and args.weight_dis > 0:
+            if idx % args.dis_critic_num == 0 and (args.weight_dis_global > 0 or args.weight_dis_local > 0):
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
             if batch['ocr_real_train']:
@@ -382,6 +393,7 @@ def add_arguments(parser):
     parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")
     parser.add_argument('--tag', type=str, default='none', help="Tag")
     parser.add_argument('--dryrun', action='store_true', help="Dryrun")
+    parser.add_argument('--ocr_real', action='store_true', help="Dryrun")
 
     # Evaluation
     parser.add_argument('--eval_real_dataset_path', type=Path, default='files/iam', help="Real dataset path")
@@ -411,11 +423,14 @@ def add_arguments(parser):
     parser.add_argument('--ocr_scheduler', type=str, default='alt3', help="OCR scheduler")
 
     # Teddy loss
-    parser.add_argument('--weight_gen', '--wg', type=float, default=1.0, help="Generator loss weight")
-    parser.add_argument('--weight_dis', '--wd', type=float, default=1.0, help="Discriminator loss weight")
+    parser.add_argument('--weight_gen_global', '--wgg', type=float, default=1.0, help="Generator global loss weight")
+    parser.add_argument('--weight_gen_local', '--wgl', type=float, default=1.0, help="Generator local loss weight")
+    parser.add_argument('--weight_dis_global', '--wdg', type=float, default=1.0, help="Discriminator global loss weight")
+    parser.add_argument('--weight_dis_local', '--wdl', type=float, default=1.0, help="Discriminator local loss weight")
     parser.add_argument('--weight_ocr', '--wo', type=float, default=1.0, help="OCR loss weight")
-    parser.add_argument('--weight_style', '--ws', type=float, default=1.0, help="Style loss weight")
-    parser.add_argument('--weight_appea', '--wa', type=float, default=0.0, help="Appearance loss weight")
+    parser.add_argument('--weight_style_global', '--wsg', type=float, default=1.0, help="Style gloabl loss weight")
+    parser.add_argument('--weight_style_local', '--wsl', type=float, default=1.0, help="Style local loss weight")
+    parser.add_argument('--weight_appea_local', '--wal', type=float, default=0.0, help="Appearance local loss weight")
     parser.add_argument('--weight_cycle', '--wc', type=float, default=1.0, help="Cycle loss weight")
     parser.add_argument('--weight_recon', '--wr', type=float, default=0.0, help="Reconstruction loss weight")
     parser.add_argument('--scheduler_start', type=int, help="Weight scheduler start")
