@@ -446,6 +446,7 @@ def add_arguments(parser):
     parser.add_argument('--gen_emb_module', type=str, default='OnehotModule', help="Embedding module")
     parser.add_argument('--gen_emb_shift', type=eval, default=(0, 0), help="Embedding shift")
     parser.add_argument('--gen_glob_style_tokens', type=int, default=3, help="Text line len")
+    parser.add_argument('--gen_cnn_decoder_width', type=int, default=16, choices=[8, 16], help="CNN decoder width")
 
     # Teddy vae
     parser.add_argument('--vae_dim', type=int, default=512, help="Model dimension")

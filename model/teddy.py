@@ -175,8 +175,8 @@ class TeddyDiscriminator(nn.Module):
 
 
 class TeddyGenerator(nn.Module):
-    def __init__(self, image_size, patch_size, dim=512, depth=6, heads=8, mlp_dim=2048,
-                 channels=3, num_style=3, dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}):
+    def __init__(self, image_size, patch_size, dim=512, depth=6, heads=8, mlp_dim=2048, channels=3, num_style=3,
+                 dropout=0.1, embedding_module='UnifontModule', embedding_module_kwargs={}, cnn_decoder_width=16):
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -218,7 +218,7 @@ class TeddyGenerator(nn.Module):
         self.transformer_style_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
         self.transformer_gen_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
 
-        self.cnn_decoder = VariationalDecoder(in_dim=dim, out_dim=channels)
+        self.cnn_decoder = VariationalDecoder(in_dim=dim, out_dim=channels, width=cnn_decoder_width // 8)
         # self.vae.requires_grad_(False)
         # self.decoder = FCNDecoder(dim=dim, out_dim=channels)
 
@@ -331,7 +331,7 @@ class PatchSampler:
 class Teddy(torch.nn.Module):
     def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width, gen_expansion_factor,
                  gen_emb_module, gen_emb_shift, gen_glob_style_tokens, dis_patch_width, dis_patch_count, style_patch_width,
-                 style_patch_count, **kwargs) -> None:
+                 style_patch_count, gen_cnn_decoder_width, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
         self.text_converter = CTCLabelConverter(charset)
@@ -340,10 +340,12 @@ class Teddy(torch.nn.Module):
         self.apperence_encoder = ImageNetEncoder()
 
         freeze(self.style_encoder)
+
+        self.gen_cnn_decoder_width = gen_cnn_decoder_width
         embedding_module_kwargs = {'charset': charset, 'transforms': UnifontShiftTransform(gen_emb_shift)}
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim,
                                         channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs,
-                                        num_style=gen_glob_style_tokens)
+                                        num_style=gen_glob_style_tokens, cnn_decoder_width=gen_cnn_decoder_width)
         self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1, input_nc=img_channels * 2)
         # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), 
         #                                               dim=dis_dim, channels=img_channels)
@@ -370,11 +372,14 @@ class Teddy(torch.nn.Module):
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_text'], device)
         enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_text'], device)
 
-        gen_img_len = enc_gen_text_len * 16
-        # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * 16
+        gen_img_len = enc_gen_text_len * self.gen_cnn_decoder_width
+        # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * self.gen_cnn_decoder_width
 
         real_style_emb, fake_recon_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
         fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
+
+        # Adjusting the width of the fakes to be a multiple of 16
+        fakes = fakes if fakes.size(-1) % 16 == 0 else F.pad(fakes, (0, 0, 8, 0), fill=1)
 
         # rand_indices = torch.randperm(len(batch['style_img']))
         # batch['other_img'] = batch['other_img'][rand_indices]
