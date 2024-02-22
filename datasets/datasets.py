@@ -356,6 +356,8 @@ class Msgpack_dataset(Base_dataset):
 
         if max_width and max_height:
             target_width = {filename: width * max_height / height for filename, (width, height) in self.imgs_to_sizes.items()}
+            if self.preloaded:
+                self.imgs_preloaded = [img for path, img in zip(self.imgs, self.imgs_preloaded) if target_width[path.stem] <= max_width]
             self.imgs = [img for img in self.imgs if target_width[img.stem] <= max_width]
 
         self.imgs_set = set(self.imgs)
