@@ -140,8 +140,6 @@ if __name__ == '__main__':
     parser = add_arguments(parser)
     parser.add_argument('--eval_all_epochs', action='store_true', help='Evaluate all epochs')
     args = parser.parse_args()
-
-    args.datasets_path = [Path(args.root_path, path) for path in args.datasets_path]
     args.checkpoint_path = Path(args.checkpoint_path, args.run_id)
 
     set_seed(args.seed)
@@ -150,11 +148,11 @@ if __name__ == '__main__':
     if args.device == 'auto':
         args.device = f'cuda:{np.argmax(free_mem_percent())}'
 
+    teddy = setup_teddy(args.device, args)
+    loader = setup_loader(args.device, args, args.eval_dataset)
     if args.eval_all_epochs:
-        teddy = setup_teddy(args.device, args)
-        loader = setup_loader(args.device, args)
         for epoch in sorted(args.checkpoint_path.glob('*_epochs.pth')):
             args.eval_epoch = int(epoch.stem.split('_')[0])
             generate_images(args.device, args, teddy, loader)
     else:
-        generate_images(args.device, args)
+        generate_images(args.device, args, teddy, loader)

@@ -181,17 +181,11 @@ class IAM_dataset(Base_dataset):
         htg_test_authors = Path('files/gan.iam.test.gt.filter27.txt').read_text().splitlines()
         htg_test_authors = sorted({line.split(',')[0] for line in htg_test_authors})
 
-        val_authors_count = round(len(htg_train_authors) * 0.1)
-        htg_val_authors = htg_train_authors[:val_authors_count]
-        htg_train_authors = htg_train_authors[val_authors_count:]
-
         target_authors = []
         if 'all' in nameset:
             target_authors += sorted(set(self.imgs_to_author.values()))
         if 'train' in nameset:
             target_authors += htg_train_authors
-        if 'val' in nameset:
-            target_authors += htg_val_authors
         if 'test' in nameset:
             target_authors += htg_test_authors
         if len(target_authors) == 0:
@@ -224,7 +218,7 @@ class IAM_dataset(Base_dataset):
 
 
 class IAM_custom_dataset(Base_dataset):
-    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), preload=False, pkl_path=None, **kwargs):
+    def __init__(self, path, dataset_type, nameset=None, transform=T.ToTensor(), pkl_path=None, **kwargs):
         super().__init__(path, nameset, transform, pkl_path)
 
         if pkl_path is None or not pkl_path.exists():
@@ -242,16 +236,13 @@ class IAM_custom_dataset(Base_dataset):
         htg_train_authors = Path('files/gan.iam.tr_va.gt.filter27.txt').read_text().splitlines()
         htg_train_authors = sorted({line.split(',')[0] for line in htg_train_authors})
 
-        val_authors_count = round(len(htg_train_authors) * 0.1)
-        val_authors = htg_train_authors[:val_authors_count]
-        train_authors = htg_train_authors[val_authors_count:]
-        assert len(set(train_authors) & set(val_authors)) == 0
-        assert len(set(train_authors) | set(val_authors)) == len(htg_train_authors)
+        htg_test_authors = Path('files/gan.iam.test.gt.filter27.txt').read_text().splitlines()
+        htg_test_authors = sorted({line.split(',')[0] for line in htg_test_authors})
 
         if nameset == 'train':
-            target_authors = train_authors
-        elif nameset == 'val':
-            target_authors = val_authors
+            target_authors = htg_train_authors
+        elif nameset == 'test':
+            target_authors = htg_test_authors
         else:
             raise ValueError(f'Unknown nameset {nameset}')
 
@@ -281,7 +272,8 @@ class IAM_eval(IAM_dataset):
         kwargs['pkl_path'] = None
         super().__init__(*args, **kwargs)
 
-        with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+        # with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+        with gzip.open('files/iam_lines_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
             self.data = json.load(file)
 
         self.imgs_id_to_path = {img.stem: img for img in self.imgs}
@@ -301,8 +293,65 @@ class IAM_eval(IAM_dataset):
         style_id = sample['style_ids'][0].split('-')
         while '-'.join(style_id) not in self.imgs_to_label and len(style_id) > 0:
             style_id.pop(-1)
+        assert len(style_id) > 0, f'No style found for {sample}'
         style_id = '-'.join(style_id)
 
+        style_text = self.imgs_to_label[style_id]
+        style_img = Image.open(self.imgs_id_to_path[style_id]) 
+
+        if self.pre_transform:
+            style_img, _ = self.pre_transform((style_img, style_text))
+        if self.post_transform:
+            style_img, _ = self.post_transform((style_img, style_text))
+
+        dst_path = sample['dst']
+
+        sample = {
+            'gen_text': gen_text,
+            'style_img': style_img,
+            'style_img_len': style_img.shape[-1],
+            'style_text': style_text,
+            'style_author': self.imgs_to_author[style_id],
+            'dst_path': dst_path
+        }
+        return sample
+    
+
+class IAM_custom_eval(IAM_custom_dataset):
+    def __init__(self, *args, **kwargs):
+        kwargs['nameset'] = 'test'
+        kwargs['max_width'] = None
+        kwargs['max_height'] = None
+        kwargs['pkl_path'] = None
+        super().__init__(*args, **kwargs)
+
+        # with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+        with gzip.open('files/iam_lines_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+            self.data = json.load(file)
+
+        self.imgs_id_to_path = {img.stem: img for img in self.imgs}
+        self.imgs_id_to_idx = {img.stem: idx for idx, img in enumerate(self.imgs)}
+
+    def filter_eval_set(self, *eval_set):
+        eval_set = set(eval_set)
+        self.data = [el for el in self.data if Path(el['dst']).parts[0] in eval_set]
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        sample = self.data[idx]
+        gen_text = sample['word']
+
+        for style_id in sample['style_ids']:
+            style_id = style_id.split('-')
+            while '-'.join(style_id) + '-00' not in self.imgs_to_label and len(style_id) > 0:
+                style_id.pop(-1)
+            style_id = '-'.join(style_id) + '-00'
+            if style_id in self.imgs_id_to_path:
+                break
+
+        assert style_id in self.imgs_id_to_path, f'No style found for {sample}'
         style_text = self.imgs_to_label[style_id]
         style_img = Image.open(self.imgs_id_to_path[style_id]) 
 
@@ -510,6 +559,8 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', min_text_width=3, **kwargs))
         elif name.lower() == 'iam_eval':
             datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='lines', **kwargs))
+        elif name.lower() == 'iam_eval_sm':
+            datasets_list.append(IAM_custom_eval(root_path / 'IAM', dataset_type='lines_sm', **kwargs))
         elif name.lower() == 'iam_eval_words':
             datasets_list.append(IAM_eval(root_path / 'IAM', dataset_type='words', **kwargs))
         elif name.lower() == 'iam_lines':
