@@ -133,7 +133,7 @@ def train(rank, args):
         epoch_start_time = time.time()
         
         weights_scheduler.step(epoch)
-        collector.update({k:v for k, v in vars(args).items() if k.startswith('weight')})
+        collector.update({k.replace('_', '/', 1):v for k, v in vars(args).items() if k.startswith('weight')})
 
         clock_verbose = False
         clock = Clock(collector, 'time/data_load', clock_verbose)
@@ -147,7 +147,8 @@ def train(rank, args):
 
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 if args.weight_dis_global > 0 or args.weight_dis_local > 0:
-                    gen_text = text_generator.sample([len(t.split()) for t in batch['style_text']])
+                    with Clock(collector, 'time/gen_text', clock_verbose):
+                        gen_text = text_generator.sample([len(t.split()) for t in batch['style_text']])
                     batch['gen_text'] = [g if random.random() > args.gen_same_text_ratio else s for s, g in zip(batch['style_text'], gen_text)]
                 else:
                     batch['gen_text'] = text_generator.sample([4] * len(batch['style_text']))
@@ -156,7 +157,8 @@ def train(rank, args):
                 if args.no_style_text:
                     batch['style_text'] = ['' for _ in batch['style_text']]
 
-                preds = teddy(batch)
+                with Clock(collector, 'time/forward', clock_verbose):
+                    preds = teddy(batch)
 
                 loss_dis, loss_gen, loss_ocr = 0, 0, 0
 
