@@ -37,21 +37,10 @@ class TextSampler:
 
         self.min_len = min_len
         self.max_len = max_len
-        self.words = [word for line in corpus for word in line.split()]
-        self.words += nltk.corpus.abc.words()
-        self.words += nltk.corpus.brown.words()
-        self.words += nltk.corpus.genesis.words()
-        self.words += nltk.corpus.inaugural.words()
-        self.words += nltk.corpus.state_union.words()
-        self.words += nltk.corpus.webtext.words()
+        self.charset = charset
+        self.corpus = corpus
 
-        if charset is not None:
-            self.words = [word for word in self.words if all([c in charset for c in word])]
-
-        random.shuffle(self.words)
-        self.words_weights = [1.0, ] * len(self.words)
-
-        self.idx = 0
+        self.load_words()
 
         # unigram_long_text = ''.join(self.words)
         # self.unigram_counts = Counter(unigram_long_text)
@@ -64,6 +53,20 @@ class TextSampler:
 
         # self.words_weights = [self.eval_word(word) for word in self.words]
 
+    def load_words(self):
+        self.words = [word for line in self.corpus for word in line.split()]
+        self.words += nltk.corpus.abc.words()
+        self.words += nltk.corpus.brown.words()
+        self.words += nltk.corpus.genesis.words()
+        self.words += nltk.corpus.inaugural.words()
+        self.words += nltk.corpus.state_union.words()
+        self.words += nltk.corpus.webtext.words()
+
+        if self.charset is not None:
+            self.words = [word for word in self.words if all([c in self.charset for c in word])]
+
+        random.shuffle(self.words)
+
     def eval_word(self, word):
         bigrams = list(pairwise(f' {word} '))
         unigram_score = sum([self.unigram_counts[c] for c in word]) / len(word)
@@ -71,13 +74,11 @@ class TextSampler:
         return (unigram_score + bigram_score) / 2
     
     def random_choices(self, count):
-        # return random.choices(self.words, weights=self.words_weights, k=count)
-        if self.idx + count > len(self.words):
-            self.idx = 0
-            random.shuffle(self.words)
-        start_idx = self.idx
-        self.idx += count
-        return self.words[start_idx:self.idx]
+        if count > len(self.words):
+            self.load_words()
+        words = self.words[:count]
+        del self.words[:count]
+        return words
 
     def sample(self, batch_lengths):
         words_count = sum(batch_lengths)

@@ -11,7 +11,7 @@ from torchvision.utils import save_image
 def setup_loader(rank, args):
     datasets_kwargs = args.__dict__.copy()
     datasets_kwargs['gen_max_width'] = None
-    datasets_kwargs['pre_transform'] = lambda x: x
+    # datasets_kwargs['pre_transform'] = lambda x: x
     datasets_kwargs['post_transform'] = T.Compose([
             T.FixedCharWidth(16) if args.eval_avg_char_width_16 else lambda x: x,
             T.ToTensor(),
@@ -42,16 +42,16 @@ if __name__ == '__main__':
     discarded = 0
     for sample in tqdm(loader):
         for img, img_len, author, lbl in zip(sample['style_img'], sample['style_img_len'], sample['style_author'], sample['style_text']):
-            if (author, lbl) in encountered:
-                discarded += 1
-                continue
+            # if (author, lbl, img_len.item()) in encountered:
+            #     discarded += 1
+            #     continue
             img = img[..., :img_len]
             author_dir = args.dst / author
             author_dir.mkdir(parents=True, exist_ok=True)
             img_path = author_dir / f'{len(encountered):06d}.png'
             img_path = img_path.resolve()
             save_image(img, img_path)
-            encountered.add((author, lbl))
+            encountered.add((author, lbl, img_len.item()))
     
     print(f'Discarded {discarded} samples')
 

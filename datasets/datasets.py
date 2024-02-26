@@ -50,6 +50,7 @@ class Base_dataset(Dataset):
         self.imgs_set = set()
         self.preloaded = False
         self.batch_keys = ['style', 'other', 'same']
+        self.multiplier = 1
 
         if pkl_path is None or not pkl_path.exists():
             self.imgs = []
@@ -108,6 +109,13 @@ class Base_dataset(Dataset):
                 path = random.choice(list(same_author_imgs))
                 idx = self.imgs_to_idx[path]
                 self._get_sample(idx, sample, 'same')
+
+            # Snippet of code used to generate multiple same images
+            if self.multiplier > 1 and 'same' in self.batch_keys:
+                for i in range(self.multiplier - 1):
+                    path = random.choice(list(same_author_imgs))
+                    idx = self.imgs_to_idx[path]
+                    self._get_sample(idx, sample, f'same_{i}')
         return sample
 
     def load_img_sizes(self, img_sizes_path):
@@ -325,8 +333,8 @@ class IAM_custom_eval(IAM_custom_dataset):
         kwargs['pkl_path'] = None
         super().__init__(*args, **kwargs)
 
-        # with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
-        with gzip.open('files/iam_lines_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+        with gzip.open('files/iam_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
+        # with gzip.open('files/iam_lines_htg_setting.json.gz', 'rt', encoding='utf-8') as file:
             self.data = json.load(file)
 
         self.imgs_id_to_path = {img.stem: img for img in self.imgs}
@@ -374,8 +382,9 @@ class IAM_custom_eval(IAM_custom_dataset):
 
 
 class Msgpack_dataset(Base_dataset):
-    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False, pkl_path=None, author_code='unknown', **kwargs):
+    def __init__(self, path, nameset='train', transform=T.ToTensor(), max_width=None, max_height=None, preload=False, pkl_path=None, author_code='unknown', author_fn=None, **kwargs):
         super().__init__(path, nameset, transform, pkl_path)
+        self.author_fn = author_fn if author_fn is not None else lambda *_: author_code
 
         if pkl_path is None or not pkl_path.exists():
             nameset_path = Path(path, f'{nameset}.msgpack')
@@ -385,7 +394,7 @@ class Msgpack_dataset(Base_dataset):
                 data = msgpack.load(f)
 
             self.imgs_to_label = {Path(filename).stem: label for filename, label, *_ in data}
-            self.imgs_to_author = {Path(filename).stem: author_code for filename, *_ in data}
+            self.imgs_to_author = {Path(filename).stem: self.author_fn(filename, *d) for filename, *d in data}
 
             self.imgs = [Path(path, 'lines') / filename for filename, *_ in data]
             assert len(self.imgs) > 0, f'No images found in {path}'
@@ -422,7 +431,9 @@ class Norhand_dataset(Msgpack_dataset):
 
 class Rimes_dataset(Msgpack_dataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, author_code='rimes', **kwargs)
+        def author_fn(filename, *args):
+            return filename.split('-')[1]
+        super().__init__(*args, author_code='rimes', author_fn=author_fn, **kwargs)
 
 
 class ICFHR16_dataset(Msgpack_dataset):
@@ -551,7 +562,7 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
     root_path = Path(kwargs['root_path'])
 
     for name in tqdm(datasets, desc=f'Loading datasets {nameset}'):
-        kwargs = {'pkl_path': root_path / f'{name.lower()}.pkl'}
+        kwargs = {'pkl_path': root_path / f'{name.lower()}_{nameset}.pkl'}
         kwargs.update(glob_kwargs)
         if name.lower() == 'iam_words':
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='words', **kwargs))
