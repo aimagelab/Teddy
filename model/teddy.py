@@ -195,8 +195,8 @@ class TeddyGenerator(nn.Module):
         )
 
         self.img_pos_encoding = SinusoidalPositionalEncoding(dim)
-        self.style_pos_encoding = self.img_pos_encoding
-        self.gen_pos_encoding = self.img_pos_encoding
+        self.style_pos_encoding = lambda x: x
+        self.gen_pos_encoding = lambda x: x
 
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
 
@@ -331,7 +331,7 @@ class PatchSampler:
 class Teddy(torch.nn.Module):
     def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width, gen_expansion_factor,
                  gen_emb_module, gen_emb_shift, gen_glob_style_tokens, dis_patch_width, dis_patch_count, style_patch_width,
-                 style_patch_count, gen_cnn_decoder_width, **kwargs) -> None:
+                 style_patch_count, gen_cnn_decoder_width, wid_num_authors, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
         self.text_converter = CTCLabelConverter(charset)
@@ -349,6 +349,8 @@ class Teddy(torch.nn.Module):
         self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1, input_nc=img_channels * 2)
         # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), 
         #                                               dim=dis_dim, channels=img_channels)
+
+        self.writer_discriminator = models.resnet18(num_classes=wid_num_authors) if kwargs['weight_writer_id'] > 0 else None
         
         self.padding_cat = PaddingCat(padding_value=1, cat_dim=1)
 
@@ -372,8 +374,10 @@ class Teddy(torch.nn.Module):
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_text'], device)
         enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_text'], device)
 
-        gen_img_len = enc_gen_text_len * self.gen_cnn_decoder_width
-        # gen_img_len = torch.clamp_max(enc_gen_text_len, enc_gen_text_len.max() // 2) * self.gen_cnn_decoder_width
+        max_gen_img_len = enc_gen_text_len * self.gen_cnn_decoder_width
+        style_gen_img_len = (batch['style_img_len'] / enc_style_text_len).floor() * self.gen_cnn_decoder_width
+        gen_img_len = torch.stack([max_gen_img_len, style_gen_img_len.int()], dim=0).min(0).values
+        gen_img_len = torch.stack([gen_img_len, max_gen_img_len - 32], dim=0).max(0).values
 
         real_style_emb, fake_recon_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
         fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
@@ -386,7 +390,7 @@ class Teddy(torch.nn.Module):
         # batch['other_img_len'] = batch['other_img_len'][rand_indices]
         # batch['other_text'] = [batch['other_text'][i] for i in rand_indices]
         # batch['other_author'] = [batch['other_author'][i] for i in rand_indices]
-
+        
         # Reconstruction
         if batch['weight']['recon']:
             results['fakes_recon'] = self.generator.cnn_decoder(fake_recon_emb)
@@ -408,12 +412,12 @@ class Teddy(torch.nn.Module):
             results['dis_local_fake_pred'] = self.discriminator(self.padding_cat(real_samples, fake_samples))
 
         # Style, Appearence, OCR
-        if batch['weight']['ocr'] or batch['weight']['style_global'] or batch['weight']['style_local'] or batch['weight']['appea_local']:
+        if batch['weight']['ocr'] or batch['weight']['style_global'] or batch['weight']['style_local'] or batch['weight']['appea_local'] or batch['weight']['writer_id']:
             fakes_rgb = repeat(fakes, 'b 1 h w -> b 3 h w')
             real_rgb = repeat(batch['style_img'], 'b 1 h w -> b 3 h w')
             other_rgb = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
 
-        if batch['weight']['style_local'] or batch['weight']['appea_local']:
+        if batch['weight']['style_local'] or batch['weight']['appea_local'] or batch['weight']['writer_id']:
             fake_samples = self.style_patch_sampler(fakes_rgb, img_len=gen_img_len)
             real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
             other_samples = self.style_patch_sampler(other_rgb, img_len=batch['other_img_len'])
@@ -431,8 +435,8 @@ class Teddy(torch.nn.Module):
 
         # Appearence
         if batch['weight']['appea_local']:
-            results['appea_local_real'] = self.apperence_encoder(real_samples)
             results['appea_local_fakes'] = self.apperence_encoder(fake_samples)
+            results['appea_local_real'] = self.apperence_encoder(real_samples)
             results['appea_local_other'] = self.apperence_encoder(other_samples)
 
         # OCR
@@ -445,6 +449,14 @@ class Teddy(torch.nn.Module):
             elif 'ocr_real_eval' in batch and batch['ocr_real_eval']:
                 with torch.inference_mode():
                     results['ocr_real_pred'] = self.ocr(real_rgb)
+
+        
+        # Writer discriminator
+        if batch['weight']['writer_id']:
+            results['fake_global_writer_id'] = self.writer_discriminator(fakes_rgb)
+            results['real_global_writer_id'] = self.writer_discriminator(real_rgb)
+            results['fake_local_writer_id'] = self.writer_discriminator(fake_samples)
+            results['real_local_writer_id'] = self.writer_discriminator(real_samples)
 
         results.update({
             'fakes': fakes,

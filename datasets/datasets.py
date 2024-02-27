@@ -485,6 +485,11 @@ class MergedDataset(Dataset):
             dataset.char_to_idx = self.char_to_idx
             dataset.idx_to_char = self.idx_to_char
 
+        authors = sorted(set(self.authors))
+        self.local_author_to_global = {author: i for i, author in enumerate(authors)}
+        
+
+
     @property
     def labels(self):
         return [label for dataset in self.datasets for label in dataset.imgs_to_label.values()]
@@ -500,17 +505,30 @@ class MergedDataset(Dataset):
     @property
     def imgs(self):
         return [img for dataset in self.datasets for img in dataset.imgs]
+    
+    @property
+    def authors(self):
+        return [f'db{i:02d}_{author}' for i, dataset in enumerate(self.datasets) for author in dataset.imgs_to_author.values()]
 
     def __len__(self):
         return sum(len(dataset) for dataset in self.datasets)
 
     def __getitem__(self, idx):
-        for dataset in self.datasets:
+        for db_idx, dataset in enumerate(self.datasets):
             if idx < len(dataset):
-                return dataset[idx]
+                return self.add_author_idx(dataset[idx], db_idx)
             else:
                 idx -= len(dataset)
         raise IndexError('Index out of range')
+    
+
+    def add_author_idx(self, sample, db_idx):
+        tmp_dict = {}
+        for key, val in sample.items():
+            if key.endswith('author'):
+                tmp_dict[key + '_idx'] = self.local_author_to_global[f'db{db_idx:02d}_{val}']
+        sample.update(tmp_dict)
+        return sample
     
     def batch_keys(self, *keys):
         if len(keys) == 1 and isinstance(keys[0], (list, tuple)):

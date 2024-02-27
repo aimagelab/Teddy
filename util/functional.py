@@ -273,6 +273,23 @@ class FakeScaler:
         pass
 
 
+class FakeOptimizer:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def step(self, *args, **kwargs):
+        pass
+
+    def zero_grad(self, *args, **kwargs):
+        pass
+
+    def state_dict(self, *args, **kwargs):
+        pass
+
+    def load_state_dict(self, *args, **kwargs):
+        pass
+
+
 class WeightsScheduler:
     def __init__(self, args, target_weight, start_epoch, length):
         self.weights = {k:v for k, v in vars(args).items() if k.startswith('weight')}

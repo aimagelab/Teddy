@@ -24,7 +24,7 @@ from generate_images import setup_loader, generate_images, Evaluator
 from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss, MaxMSELoss
-from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, WeightsScheduler, ChunkLoader
+from util.functional import TextSampler, GradSwitch, MetricCollector, Clock, WeightsScheduler, ChunkLoader, FakeOptimizer
 
 
 def free_mem_percent():
@@ -64,11 +64,12 @@ def train(rank, args):
     ocr_checkpoint_c = torch.load(args.ocr_checkpoint_c, map_location=device)
     assert ocr_checkpoint_a['charset'] == ocr_checkpoint_b['charset'], "OCR checkpoints must have the same charset"
 
+    args.wid_num_authors = len(set(dataset.authors))
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
     print(f'Teddy has {count_parameters_in_millions(teddy):.2f} M parameters.')
 
     optimizer_dis = torch.optim.AdamW(teddy.discriminator.parameters(), lr=args.lr_dis)
-    # scheduler_dis = torch.optim.lr_scheduler.ConstantLR(optimizer_dis, args.lr_dis)
+    optimizer_wid = torch.optim.AdamW(teddy.writer_discriminator.parameters(), lr=args.lr_wid) if args.weight_writer_id > 0 else FakeOptimizer()
     
     transformer_params = [param for name, param in teddy.generator.named_parameters() if not 'cnn_decoder' in name]
     cnn_decoder_params = [param for name, param in teddy.generator.named_parameters() if 'cnn_decoder' in name]
@@ -105,6 +106,7 @@ def train(rank, args):
                 
         optimizer_dis.load_state_dict(checkpoint['optimizer_dis'])
         optimizer_gen.load_state_dict(checkpoint['optimizer_gen'])
+        optimizer_wid.load_state_dict(checkpoint['optimizer_wid'])
         # scheduler_dis.load_state_dict(checkpoint['scheduler_dis'])
         # scheduler_gen.load_state_dict(checkpoint['scheduler_gen'])
         args.start_epochs = int(last_checkpoint.name.split('_')[0]) + 1
@@ -116,10 +118,10 @@ def train(rank, args):
     hinge_criterion = AdversarialHingeLoss()
     cycle_criterion = MaxMSELoss()
     recon_criterion = torch.nn.MSELoss()
+    wid_criterion = torch.nn.CrossEntropyLoss()
 
     text_min_len = max(args.dis_patch_width, args.style_patch_width) // args.gen_patch_width
-    import string
-    text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=None, charset=set(string.ascii_lowercase))
+    text_generator = TextSampler(dataset.labels, min_len=text_min_len, max_len=None, charset=set(dataset.char_to_idx.keys()))
 
     if args.wandb and rank == 0 and not args.dryrun:
         name = f"{args.run_id}_{args.tag}"
@@ -231,15 +233,31 @@ def train(rank, args):
                     collector['recon_loss'] = recon_loss
                     loss_gen += recon_loss * args.weight_recon
 
+                # Writer id loss
+                if args.weight_writer_id > 0:
+                    patches = preds['fake_local_writer_id'].size(0) // preds['fake_global_writer_id'].size(0)
+                    style_local_author_idx = repeat(batch['style_author_idx'], 'b -> (b p)', p=patches)
+                    wid_global_fake_loss = wid_criterion(preds['fake_global_writer_id'], batch['style_author_idx'].long())
+                    wid_local_fake_loss = wid_criterion(preds['fake_local_writer_id'], style_local_author_idx.long())
+                    collector['wid_global_fake_loss', 'wid_local_fake_loss'] = wid_global_fake_loss, wid_local_fake_loss
+                    loss_gen += (wid_global_fake_loss + wid_local_fake_loss) * args.weight_writer_id
+
+                    wid_global_real_loss = wid_criterion(preds['real_global_writer_id'], batch['style_author_idx'].long())
+                    wid_local_real_loss = wid_criterion(preds['real_local_writer_id'], style_local_author_idx.long())
+                    collector['wid_global_real_loss', 'wid_local_real_loss'] = wid_global_real_loss, wid_local_real_loss
+                    loss_wid = (wid_global_real_loss + wid_local_real_loss) * args.weight_writer_id
+
                 if idx % args.dis_critic_num == 0:
                     collector['loss_dis'] = loss_dis
                 collector['loss_gen'] = loss_gen
                 collector['loss_ocr'] = loss_ocr
+                collector['loss_wid'] = loss_wid
 
                 clock.start()  # time/data_load
 
             if idx % args.dis_critic_num == 0:
                 optimizer_dis.zero_grad()
+            optimizer_wid.zero_grad()
             optimizer_gen.zero_grad()
             optimizer_ocr.zero_grad()
 
@@ -251,18 +269,19 @@ def train(rank, args):
             if batch['ocr_real_train']:
                 with GradSwitch(teddy, teddy.ocr):
                     scaler.scale(loss_ocr).backward(retain_graph=True)
+            if args.weight_writer_id > 0:
+                with GradSwitch(teddy, teddy.writer_discriminator):
+                    scaler.scale(loss_wid).backward(retain_graph=True)
 
             # Check gradient magnitude
-            collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
-            collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
+            # collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
+            # collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
 
             if idx % args.dis_critic_num == 0 and (args.weight_dis_global > 0 or args.weight_dis_local > 0):
                 scaler.step(optimizer_dis)
             scaler.step(optimizer_gen)
-            if batch['ocr_real_train']:
-                scaler.step(optimizer_ocr)
-            else:
-                optimizer_ocr.step()
+            scaler.step(optimizer_wid) if args.weight_writer_id > 0 else None
+            scaler.step(optimizer_ocr) if batch['ocr_real_train'] else optimizer_ocr.step()
 
             scaler.update()
 
@@ -313,6 +332,7 @@ def train(rank, args):
                 'model': teddy.state_dict(),
                 'optimizer_dis': optimizer_dis.state_dict(),
                 'optimizer_gen': optimizer_gen.state_dict(),
+                'optimizer_wid': optimizer_wid.state_dict(),
                 # 'scheduler_dis': scheduler_dis.state_dict(),
                 # 'scheduler_gen': scheduler_gen.state_dict(),
                 'optimizer_ocr': optimizer_ocr.state_dict(),
@@ -380,6 +400,7 @@ def add_arguments(parser):
     parser.add_argument('--lr_gen_cnn_decoder', type=float, default=0.0005)
     parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
+    parser.add_argument('--lr_wid', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
@@ -435,6 +456,7 @@ def add_arguments(parser):
     parser.add_argument('--weight_appea_local', '--wal', type=float, default=0.0, help="Appearance local loss weight")
     parser.add_argument('--weight_cycle', '--wc', type=float, default=1.0, help="Cycle loss weight")
     parser.add_argument('--weight_recon', '--wr', type=float, default=0.0, help="Reconstruction loss weight")
+    parser.add_argument('--weight_writer_id', '--wid', type=float, default=0.0, help="Writer id loss weight")
     parser.add_argument('--scheduler_start', type=int, help="Weight scheduler start")
     parser.add_argument('--scheduler_lenght', type=int, default=10, help="Weight scheduler length")
     
