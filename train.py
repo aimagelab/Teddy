@@ -162,7 +162,7 @@ def train(rank, args):
                 with Clock(collector, 'time/forward', clock_verbose):
                     preds = teddy(batch)
 
-                loss_dis, loss_gen, loss_ocr = 0, 0, 0
+                loss_dis, loss_gen, loss_ocr, loss_wid = 0, 0, 0, 0
 
                 # Discriminator loss
                 if idx % args.dis_critic_num == 0 and args.weight_dis_global > 0:
