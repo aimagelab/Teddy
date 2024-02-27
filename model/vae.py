@@ -8,9 +8,9 @@ import numpy as np
 from .cnn_decoder import Conv2dBlock, ResBlocks
 from einops import rearrange
 
-class VariationalEncoder(nn.Module):
+class Encoder(nn.Module):
     def __init__(self, ups=3, n_res=2, dim=64, in_dim=1, res_norm='in', activ='relu', pad_type='reflect'):
-        super(VariationalEncoder, self).__init__()
+        super(Encoder, self).__init__()
 
         self.model = []
         # self.model.append(ResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type))
@@ -32,9 +32,9 @@ class VariationalEncoder(nn.Module):
         return x
     
 
-class VariationalDecoder(nn.Module):
+class Decoder(nn.Module):
     def __init__(self, ups=3, n_res=2, in_dim=512, dim=512, out_dim=1, height=4, width=2, res_norm='in', activ='relu', pad_type='reflect'):
-        super(VariationalDecoder, self).__init__()
+        super(Decoder, self).__init__()
         self.height = height
         self.width = width
         self.fc = nn.Linear(in_dim, dim * height * width)
@@ -60,12 +60,9 @@ class VariationalDecoder(nn.Module):
         return x
     
 
-class VariationalAutoencoder(nn.Module):
-    def __init__(self, latent_dims, channels=1):
-        super(VariationalAutoencoder, self).__init__()
-        self.encoder = VariationalEncoder(dim=latent_dims, in_dim=channels)
-        self.decoder = VariationalDecoder(in_dim=latent_dims, out_dim=channels)
-        
+class Sampler(nn.Module):
+    def __init__(self, latent_dims):
+        super(Sampler, self).__init__()
         self.mu_linear = nn.Linear(latent_dims, latent_dims)
         self.sigma_linear = nn.Linear(latent_dims, latent_dims)
 
@@ -79,16 +76,25 @@ class VariationalAutoencoder(nn.Module):
         self.N.scale = fn(self.N.scale)
         return super()._apply(fn, recurse)
 
-    def sample(self, x):
+    def forward(self, x):
         mu = self.mu_linear(x)
         sigma = torch.exp(self.sigma_linear(x))
         z = mu + sigma * self.N.sample(mu.shape)
         self.kl = (sigma ** 2 + mu ** 2 - torch.log(sigma) - 1/2).sum()
         return z
 
+
+class VariationalAutoencoder(nn.Module):
+    def __init__(self, latent_dims, channels=1):
+        super(VariationalAutoencoder, self).__init__()
+        self.encoder = Encoder(dim=latent_dims, in_dim=channels)
+        self.decoder = Decoder(in_dim=latent_dims, out_dim=channels)
+        self.sampler = Sampler(latent_dims)
+
+
     def forward(self, img):
         x = self.encoder(img)
-        z = self.sample(x)
+        z = self.sampler(x)
         out = self.decoder(z)
         return out
     

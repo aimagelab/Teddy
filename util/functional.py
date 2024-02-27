@@ -40,6 +40,7 @@ class TextSampler:
         self.charset = charset
         self.corpus = corpus
 
+        self.idx = 0
         self.load_words()
 
         # unigram_long_text = ''.join(self.words)
@@ -74,11 +75,14 @@ class TextSampler:
         return (unigram_score + bigram_score) / 2
     
     def random_choices(self, count):
-        if count > len(self.words):
-            self.load_words()
-        words = self.words[:count]
-        del self.words[:count]
-        return words
+        if self.idx + count > len(self.words):
+            res = self.words[self.idx:]
+            res += self.words[:count - len(res)]
+            self.idx = count - len(res)
+        else:
+            res = self.words[self.idx:self.idx+count]
+            self.idx += count
+        return res
 
     def sample(self, batch_lengths):
         words_count = sum(batch_lengths)

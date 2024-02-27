@@ -13,7 +13,7 @@ from torchvision.transforms import functional as F
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from .vae import VariationalDecoder
+from .vae import Decoder, Sampler
 from .cnn_decoder import FCNDecoder
 from .ocr import OrigamiNet
 from .hwt.model import Discriminator as HWTDiscriminator
@@ -218,7 +218,7 @@ class TeddyGenerator(nn.Module):
         self.transformer_style_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
         self.transformer_gen_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers=depth, norm=decoder_norm)
 
-        self.cnn_decoder = VariationalDecoder(in_dim=dim, out_dim=channels, width=cnn_decoder_width // 8)
+        self.cnn_decoder = Decoder(in_dim=dim, out_dim=channels, width=cnn_decoder_width // 8)
         # self.vae.requires_grad_(False)
         # self.decoder = FCNDecoder(dim=dim, out_dim=channels)
 

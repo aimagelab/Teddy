@@ -99,7 +99,7 @@ def train(rank, args):
         missing, unexpeted = teddy.load_state_dict(checkpoint['model'], strict=False)
         if len(keys := missing + unexpeted) > 0:
             if sum([not 'pos_encoding' in k for k in missing + unexpeted]) > 0:
-                raise ValueError(f"Model not loaded: {keys}")
+                warnings.warn(f"Model not properly loaded: {keys}")
             if sum(['pos_encoding' in k for k in missing + unexpeted]) > 0:
                 warnings.warn(f"Pos encoding not loaded: {keys}")
                 
@@ -389,7 +389,7 @@ def add_arguments(parser):
     parser.add_argument('--start_epochs', type=int, default=0, help="Start epochs")
     parser.add_argument('--epochs', type=int, default=10 ** 9, help="Epochs")
     parser.add_argument('--epochs_size', type=int, default=1000, help="Epochs size")
-    parser.add_argument('--save_interval', type=int, default=25, help="Save interval")
+    parser.add_argument('--save_interval', type=int, default=10, help="Save interval")
     parser.add_argument('--world_size', type=int, default=1, help="World size")
     parser.add_argument('--checkpoint_path', type=str, default='files/checkpoints', help="Checkpoint path")
     parser.add_argument('--run_id', type=str, default=uuid.uuid4().hex[:4], help="Run id")

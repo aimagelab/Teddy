@@ -87,6 +87,31 @@ def setup_loader(rank, args, eval_dataset='iam_eval'):
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=False)
     return loader
 
+
+@torch.no_grad()
+def setup_loader_no_iam(rank, args):
+    datasets_kwargs = args.__dict__.copy()
+    # datasets_kwargs['pre_transform'] = T.Compose([
+    #         T.Convert(1),
+    #         T.ResizeFixedHeight(32),
+    #         T.FixedCharWidth(16) if args.eval_avg_char_width_16 else lambda x: x,
+    #         T.ToTensor(),
+    #         T.PadNextDivisible(16),
+    #         T.Normalize((0.5,), (0.5,))
+    #     ])
+    datasets_kwargs['post_transform'] = T.Compose([
+            T.ToTensor(),
+            T.PadNextDivisible(16),
+            T.Normalize((0.5,), (0.5,))
+        ])
+    dataset = dataset_factory('test', **datasets_kwargs)
+    dataset.batch_keys('style', 'same')
+
+    loader = torch.utils.data.DataLoader(dataset, batch_size=args.eval_batch_size, shuffle=True, num_workers=args.num_workers,
+                                         collate_fn=dataset.collate_fn, pin_memory=True, drop_last=False)
+    return loader
+
+
 @torch.no_grad()
 def setup_teddy(rank, args):
     device = torch.device(rank)
@@ -95,6 +120,46 @@ def setup_teddy(rank, args):
     teddy = Teddy(ocr_checkpoint_a['charset'], **args.__dict__).to(device)
     teddy.eval()
     return teddy
+
+
+@torch.no_grad()
+def generate_images_no_iam(rank, args, teddy=None, loader=None):
+    device = torch.device(rank)
+
+    teddy = teddy if teddy is not None else setup_teddy(rank, args)
+    loader = loader if loader is not None else setup_loader_no_iam(rank, args)
+
+    if args.checkpoint_path.exists() and len(list(args.checkpoint_path.glob('*_epochs.pth'))) > 0:
+        last_checkpoint = sorted(args.checkpoint_path.glob('*_epochs.pth'))[-1]
+        if args.eval_epoch is not None:
+            last_checkpoint = Path(args.checkpoint_path, f'{args.eval_epoch:06d}_epochs.pth')
+        checkpoint = torch.load(last_checkpoint)
+        missing, unexpeted = teddy.load_state_dict(checkpoint['model'], strict=False)
+        if len(keys := missing + unexpeted) > 0:
+            if sum([not 'pos_encoding' in k for k in missing + unexpeted]) > 0:
+                raise ValueError(f"Model not loaded: {keys}")
+            if sum(['pos_encoding' in k for k in missing + unexpeted]) > 0:
+                warnings.warn(f"Pos encoding not loaded: {keys}")
+        print(f"Loaded checkpoint {last_checkpoint}")
+    else:
+        raise ValueError(f"Checkpoint path {args.checkpoint_path} does not exist")
+
+    suffix = f'{args.datasets[0]}_{last_checkpoint.stem}_16' if args.eval_avg_char_width_16 else f'{args.datasets[0]}_{last_checkpoint.stem}'
+    fakes_path = args.checkpoint_path / 'saved_images' / suffix
+    fakes_path.mkdir(parents=True, exist_ok=True)
+    counter = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        for idx, batch in enumerate(tqdm(loader, desc='Generating images')):
+            try:
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                batch['style_text'] = [''.join([c for c in txt if c in teddy.text_converter.charset]) for txt in batch['style_text']]
+                batch['same_text'] = [''.join([c for c in txt if c in teddy.text_converter.charset]) for txt in batch['same_text']]
+                fakes = teddy.generate(batch['style_text'], batch['same_text'], batch['same_img'])
+                dst_paths = [Path(author) / f'{img_id:06d}.png' for author, img_id in zip(batch['same_author'], range(counter, 10*10))]
+                executor.submit(process_image, fakes.cpu(), batch['style_text'], dst_paths, fakes_path)
+            except KeyboardInterrupt as e:
+                break
 
 
 @torch.no_grad()
@@ -149,10 +214,11 @@ if __name__ == '__main__':
         args.device = f'cuda:{np.argmax(free_mem_percent())}'
 
     teddy = setup_teddy(args.device, args)
-    loader = setup_loader(args.device, args, args.eval_dataset)
+    # loader = setup_loader(args.device, args, args.eval_dataset)
+    loader = setup_loader_no_iam(args.device, args)
     if args.eval_all_epochs:
         for epoch in sorted(args.checkpoint_path.glob('*_epochs.pth')):
             args.eval_epoch = int(epoch.stem.split('_')[0])
-            generate_images(args.device, args, teddy, loader)
+            generate_images_no_iam(args.device, args, teddy, loader)
     else:
-        generate_images(args.device, args, teddy, loader)
+        generate_images_no_iam(args.device, args, teddy, loader)

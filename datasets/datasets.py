@@ -578,6 +578,10 @@ def dataset_factory(nameset, datasets, idx_to_char=None, img_height=32, gen_patc
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='lines', **kwargs))
         elif name.lower() == 'iam_lines_16':
             datasets_list.append(IAM_dataset(root_path / 'IAM', dataset_type='lines_16', **kwargs))
+        elif name.lower() == 'iam_lines_l':
+            datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_l', **kwargs))
+        elif name.lower() == 'iam_lines_m':
+            datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_m', **kwargs))
         elif name.lower() == 'iam_lines_sm':
             datasets_list.append(IAM_custom_dataset(root_path / 'IAM', dataset_type='lines_sm', **kwargs))
         elif name.lower() == 'iam_lines_xs':
