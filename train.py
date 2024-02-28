@@ -440,7 +440,7 @@ def add_arguments(parser):
     parser.add_argument('--ddp', action='store_true', help="Use DDP")
     parser.add_argument('--clip_grad_norm', type=float, default=-1, help="Clip grad norm")
 
-    # Teddy ocr  files/ocr_checkpoints/0ea8_ocr_b.pth
+    # Teddy ocr
     parser.add_argument('--ocr_checkpoint_a', type=Path, default='files/ocr_checkpoints/f745_ocr_a.pth', help="OCR checkpoint a")
     parser.add_argument('--ocr_checkpoint_b', type=Path, default='files/ocr_checkpoints/0ea8_ocr_b.pth', help="OCR checkpoint b")
     parser.add_argument('--ocr_checkpoint_c', type=Path, default='files/ocr_checkpoints/0259_ocr_c.pth', help="OCR checkpoint c")
