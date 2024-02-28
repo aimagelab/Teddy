@@ -32,27 +32,18 @@ def grouper(iterable, n, *, incomplete='strict', fillvalue=None):
 
 
 class TextSampler:
-    def __init__(self, corpus, min_len, max_len, exponent=0.5, charset=None):
+    def __init__(self, corpus, min_len, max_len, exponent=1, charset=None):
         nltk_download()
 
         self.min_len = min_len
         self.max_len = max_len
         self.charset = charset
         self.corpus = corpus
+        self.exponent = exponent
 
         self.idx = 0
         self.load_words()
 
-        # unigram_long_text = ''.join(self.words)
-        # self.unigram_counts = Counter(unigram_long_text)
-        # self.unigram_counts = {k: len(unigram_long_text) / v ** exponent for k, v in self.unigram_counts.items()}
-
-        # bigram_long_text = ' ' + ' '.join(self.words) + ' '
-        # bigram_long_text = [''.join(pair) for pair in pairwise(bigram_long_text)]
-        # self.bigram_counts = Counter(bigram_long_text)
-        # self.bigram_counts = {k: len(bigram_long_text) / v ** exponent for k, v in self.bigram_counts.items()}
-
-        # self.words_weights = [self.eval_word(word) for word in self.words]
 
     def load_words(self):
         self.words = [word for line in self.corpus for word in line.split()]
@@ -66,7 +57,35 @@ class TextSampler:
         if self.charset is not None:
             self.words = [word for word in self.words if all([c in self.charset for c in word])]
 
-        random.shuffle(self.words)
+        unigram_long_text = ''.join(self.words)
+        self.unigram_counts = Counter(unigram_long_text)
+        self.unigram_counts = {k: len(unigram_long_text) / v ** self.exponent for k, v in self.unigram_counts.items()}
+
+        bigram_long_text = ' ' + ' '.join(self.words) + ' '
+        bigram_long_text = [''.join(pair) for pair in pairwise(bigram_long_text)]
+        self.bigram_counts = Counter(bigram_long_text)
+        self.bigram_counts = {k: len(bigram_long_text) / v ** self.exponent for k, v in self.bigram_counts.items()}
+
+        self.words_weights = [self.eval_word(word) for word in self.words]
+        # self.generate_words_freq(self.words, 'words_all.png')
+        self.words = random.choices(self.words, weights=self.words_weights, k=len(self.words))
+        # self.generate_words_freq(self.words, 'words_rand.png')
+
+    @staticmethod
+    def generate_words_freq(words, filename='words_freq.png'):
+        import matplotlib.pyplot as plt
+
+        data = Counter(''.join(words))
+        sorted_data = sorted(data.items(), key=lambda x: x[1], reverse=True)
+        labels, counts = zip(*sorted_data)
+
+        # Creating histogram
+        plt.bar(labels, counts)
+        plt.xlabel('Categories')
+        plt.ylabel('Counts')
+        plt.title('Histogram of Categories (Sorted by Frequency)')
+        plt.savefig(filename)
+        plt.clf()
 
     def eval_word(self, word):
         bigrams = list(pairwise(f' {word} '))

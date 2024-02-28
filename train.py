@@ -51,6 +51,7 @@ def train(rank, args):
     device = torch.device(rank)
 
     dataset = dataset_factory('train', **args.__dict__)
+    print(f"Dataset has {len(dataset)} samples.")
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                                          collate_fn=dataset.collate_fn, pin_memory=True, drop_last=True)
     loader = ChunkLoader(loader, args.epochs_size)
@@ -313,8 +314,7 @@ def train(rank, args):
                 # same_author_imgs = make_grid(batch['same_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
                 # other_author_imgs = make_grid(batch['other_author_imgs'], nrow=1, normalize=True, value_range=(-1, 1))
 
-                style_text = [' ' for _ in batch['style_text']] if args.no_style_text else batch['style_text']
-                eval_page = teddy.generate_eval_page(batch['gen_text'], style_text, batch['style_img'])
+                eval_page = teddy.generate_eval_page(batch['gen_text'], batch['style_text'], batch['style_img'])
 
             collector['time/epoch_inference'] = time.time() - epoch_start_time
             collector['ocr_loss_real'] = ocr_loss_real
@@ -427,10 +427,11 @@ def add_arguments(parser):
                         
     # Ablation
     parser.add_argument('--no_style_text', action='store_true', help="No style text")
+    parser.add_argument('--single_img_dis', action='store_true', help="Single img discriminator")
     
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
-    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_sm',], help="Datasets")
+    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_xl',], help="Datasets")
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
 
     # Teddy general

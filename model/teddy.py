@@ -305,7 +305,6 @@ class PatchSampler:
 
         device = img.device
         img_len = torch.tensor([w] * b, device=device) if img_len is None else img_len
-        img_len = (img_len / self.unit).ceil().long()
         img_seq = self.img_to_seq(img[:, :, :, :img_len.max() * self.unit])
 
         try:
@@ -326,12 +325,36 @@ class PatchSampler:
             imgs.append(tmp)
         # return self.seq_to_img(img_seq)
         return rearrange(torch.cat(imgs, -1), 'b p c h pw -> (b p) c h pw')
+    
+
+class UnfoldPatchSampler:
+    def __init__(self, patch_width, patch_height, patch_count, stride=16):
+        self.patch_width = patch_width
+        self.patch_height = patch_height
+        self.patch_count = patch_count
+        self.stride = stride
+        self.unfold = nn.Unfold(kernel_size=(patch_height, patch_width), stride=stride)
+    
+    def __call__(self, img, img_len):
+        b, c, h, w = img.shape
+        if w < self.patch_width:
+            img = torch.nn.functional.pad(img, (0, self.patch_width - w), value=1)
+            b, c, h, w = img.shape
+
+        max_idx = ((img_len - self.patch_width) / self.stride).clamp_min(0)
+        patches = rearrange(self.unfold(img), 'b (c h w) l -> b l c h w', c=c, h=h)
+        rand_idx = torch.randint(patches.size(1), (b, self.patch_count)).to(img.device)
+        rand_idx %= max_idx.long().unsqueeze(1)
+        rand_idx = torch.stack([rand_idx, repeat(max_idx, 'b -> b p', p=self.patch_count)]).min(0).values
+        rand_idx += torch.arange(b, device=img.device).unsqueeze(1) * patches.size(1)
+
+        return patches.flatten(0, 1)[rand_idx.flatten().long()]
 
 
 class Teddy(torch.nn.Module):
     def __init__(self, charset, img_height, img_channels, gen_dim, dis_dim, gen_max_width, gen_patch_width, gen_expansion_factor,
                  gen_emb_module, gen_emb_shift, gen_glob_style_tokens, dis_patch_width, dis_patch_count, style_patch_width,
-                 style_patch_count, gen_cnn_decoder_width, wid_num_authors, **kwargs) -> None:
+                 style_patch_count, gen_cnn_decoder_width, wid_num_authors, single_img_dis, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
         self.text_converter = CTCLabelConverter(charset)
@@ -346,16 +369,17 @@ class Teddy(torch.nn.Module):
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim,
                                         channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs,
                                         num_style=gen_glob_style_tokens, cnn_decoder_width=gen_cnn_decoder_width)
-        self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1, input_nc=img_channels * 2)
-        # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), 
-        #                                               dim=dis_dim, channels=img_channels)
+        
+        dis_input_channels = img_channels * 2 if not single_img_dis else img_channels
+        self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1, input_nc=dis_input_channels)
+        self.padding_cat = PaddingCat(padding_value=1, cat_dim=1) if not single_img_dis else lambda real, fake: fake
+        # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), dim=dis_dim, channels=img_channels)
 
         self.writer_discriminator = models.resnet18(num_classes=wid_num_authors) if kwargs['weight_writer_id'] > 0 else None
         
-        self.padding_cat = PaddingCat(padding_value=1, cat_dim=1)
 
-        self.dis_patch_sampler = PatchSampler(dis_patch_width, dis_patch_count)
-        self.style_patch_sampler = PatchSampler(style_patch_width, style_patch_count)
+        self.dis_patch_sampler = UnfoldPatchSampler(dis_patch_width, img_height, dis_patch_count)
+        self.style_patch_sampler = UnfoldPatchSampler(style_patch_width, img_height, style_patch_count)
         self.collector = MetricCollector()
 
     def generate(self, gen_texts, style_texts, style_img, enc_gen_text=None, enc_style_text=None):
@@ -374,22 +398,14 @@ class Teddy(torch.nn.Module):
         enc_style_text, enc_style_text_len = self.text_converter.encode(batch['style_text'], device)
         enc_gen_text, enc_gen_text_len = self.text_converter.encode(batch['gen_text'], device)
 
-        max_gen_img_len = enc_gen_text_len * self.gen_cnn_decoder_width
-        style_gen_img_len = (batch['style_img_len'] / enc_style_text_len).floor() * self.gen_cnn_decoder_width
-        gen_img_len = torch.stack([max_gen_img_len, style_gen_img_len.int()], dim=0).min(0).values
-        gen_img_len = torch.stack([gen_img_len, max_gen_img_len - 32], dim=0).max(0).values
+        # gen_img_len = enc_gen_text_len * self.gen_cnn_decoder_width
+        gen_img_len = (batch['style_img_len'] / enc_style_text_len).floor() * enc_gen_text_len
 
         real_style_emb, fake_recon_emb = self.generator.forward_style(batch['style_img'], enc_style_text)
         fakes = self.generator.forward_gen(real_style_emb, enc_gen_text)
 
         # Adjusting the width of the fakes to be a multiple of 16
         fakes = fakes if fakes.size(-1) % 16 == 0 else F.pad(fakes, (0, 0, 8, 0), fill=1)
-
-        # rand_indices = torch.randperm(len(batch['style_img']))
-        # batch['other_img'] = batch['other_img'][rand_indices]
-        # batch['other_img_len'] = batch['other_img_len'][rand_indices]
-        # batch['other_text'] = [batch['other_text'][i] for i in rand_indices]
-        # batch['other_author'] = [batch['other_author'][i] for i in rand_indices]
         
         # Reconstruction
         if batch['weight']['recon']:
@@ -477,8 +493,10 @@ class Teddy(torch.nn.Module):
         alphabet = list(string.ascii_letters + string.digits)
 
         fakes = []
-        fakes.append(self.generate(style_text, style_text, style_img))  # fakes_same_text
-        fakes.append(self.generate(style_text, style_text, style_img))  # fakes_same_text
+        try:
+            fakes.append(self.generate(style_text, style_text, style_img))  # fakes_same_text
+        except:
+            pass
         fakes.append(self.generate([''.join(alphabet)] * batch_size, style_text, style_img))  # fakes_alph_join
         alph_sep = ' '.join(alphabet)
         fakes.append(self.generate([alph_sep[:len(alph_sep) // 2 + 1]] * batch_size, style_text, style_img))  # fakes_alph_sep_first_half
