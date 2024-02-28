@@ -401,7 +401,7 @@ def add_arguments(parser):
     parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--lr_wid', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
     parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
