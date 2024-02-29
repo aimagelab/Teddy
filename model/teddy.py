@@ -431,9 +431,9 @@ class Teddy(torch.nn.Module):
             results['dis_glob_fake_pred'] = self.discriminator(self.padding_cat(batch['style_img'], fakes))
 
         if batch['weight']['dis_local']:
-            real_samples = self.dis_patch_sampler(batch['style_img'], img_len=None)
-            same_samples = self.dis_patch_sampler(batch['same_img'], img_len=None)
-            fake_samples = self.dis_patch_sampler(fakes, img_len=None)
+            real_samples = self.dis_patch_sampler(batch['style_img'], img_len=batch['style_img_len'])
+            same_samples = self.dis_patch_sampler(batch['same_img'], img_len=batch['same_img_len'])
+            fake_samples = self.dis_patch_sampler(fakes, img_len=gen_img_len)
             results['dis_local_real_pred'] = self.discriminator(self.padding_cat(real_samples, same_samples))
             results['dis_local_fake_pred'] = self.discriminator(self.padding_cat(real_samples, fake_samples))
 
@@ -444,9 +444,9 @@ class Teddy(torch.nn.Module):
             other_rgb = repeat(batch['other_img'], 'b 1 h w -> b 3 h w')
 
         if batch['weight']['style_local'] or batch['weight']['appea_local'] or batch['weight']['writer_id']:
-            fake_samples = self.style_patch_sampler(fakes_rgb, img_len=None)
-            real_samples = self.style_patch_sampler(real_rgb, img_len=None)
-            other_samples = self.style_patch_sampler(other_rgb, img_len=None)
+            fake_samples = self.style_patch_sampler(fakes_rgb, img_len=gen_img_len)
+            real_samples = self.style_patch_sampler(real_rgb, img_len=batch['style_img_len'])
+            other_samples = self.style_patch_sampler(other_rgb, img_len=batch['other_img_len'])
 
         # Style
         if batch['weight']['style_global']:
