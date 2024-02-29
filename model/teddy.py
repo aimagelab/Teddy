@@ -194,8 +194,8 @@ class TeddyGenerator(nn.Module):
             nn.LayerNorm(dim),
         )
 
-        self.img_pos_encoding = SinusoidalPositionalEncoding(dim)
-        self.style_pos_encoding = lambda x: x
+        self.img_pos_encoding = LearnedPositionalEncoding(dim)
+        self.style_pos_encoding = LearnedPositionalEncoding(dim)
         self.gen_pos_encoding = lambda x: x
 
         self.style_tokens = nn.Parameter(torch.randn(1, num_style, dim))
@@ -204,7 +204,7 @@ class TeddyGenerator(nn.Module):
         embedding_module = globals()[embedding_module]
         embedding_module_kwargs['dim'] = dim
         self.style_embedding = embedding_module(**embedding_module_kwargs)
-        self.gen_embedding = self.style_embedding
+        self.gen_embedding = embedding_module(**embedding_module_kwargs)
 
         transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
         transformer_decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim, dropout=dropout, batch_first=True)
@@ -349,6 +349,17 @@ class UnfoldPatchSampler:
         rand_idx += torch.arange(b, device=img.device).unsqueeze(1) * patches.size(1)
 
         return patches.flatten(0, 1)[rand_idx.flatten().long()]
+[]    
+
+class StartPatchSampler(UnfoldPatchSampler):    
+    def __call__(self, img, img_len):
+        b, c, h, w = img.shape
+        if w < self.patch_width:
+            img = torch.nn.functional.pad(img, (0, self.patch_width - w), value=1)
+            b, c, h, w = img.shape
+
+        patches = img[..., :self.patch_width]
+        return repeat(patches, 'b c h w -> (b p) c h w', p=self.patch_count)
 
 
 class Teddy(torch.nn.Module):
@@ -357,14 +368,14 @@ class Teddy(torch.nn.Module):
                  style_patch_count, gen_cnn_decoder_width, wid_num_authors, single_img_dis, **kwargs) -> None:
         super().__init__()
         self.expansion_factor = gen_expansion_factor
-        self.text_converter = CTCLabelConverter(charset)
-        self.ocr = OrigamiNet(o_classes=len(charset) + 1)
-        self.style_encoder = FontSquareEncoder()
-        self.apperence_encoder = ImageNetEncoder()
-
-        freeze(self.style_encoder)
-
         self.gen_cnn_decoder_width = gen_cnn_decoder_width
+
+        self.text_converter = CTCLabelConverter(charset)
+        self.ocr = OrigamiNet(o_classes=len(charset) + 1) if kwargs['weight_ocr'] > 0 else None
+        self.style_encoder = FontSquareEncoder() if kwargs['weight_style_local'] > 0 or kwargs['weight_style_global'] > 0 else None
+        self.apperence_encoder = ImageNetEncoder() if kwargs['weight_appea_local'] > 0 else None
+        self.writer_discriminator = models.resnet18(num_classes=wid_num_authors) if kwargs['weight_writer_id'] > 0 else None
+
         embedding_module_kwargs = {'charset': charset, 'transforms': UnifontShiftTransform(gen_emb_shift)}
         self.generator = TeddyGenerator((img_height, gen_max_width), (img_height, gen_patch_width), dim=gen_dim,
                                         channels=img_channels, embedding_module=gen_emb_module, embedding_module_kwargs=embedding_module_kwargs,
@@ -372,11 +383,7 @@ class Teddy(torch.nn.Module):
         
         dis_input_channels = img_channels * 2 if not single_img_dis else img_channels
         self.discriminator = HWTDiscriminator(resolution=gen_patch_width, vocab_size=len(charset) + 1, input_nc=dis_input_channels)
-        self.padding_cat = PaddingCat(padding_value=1, cat_dim=1) if not single_img_dis else lambda real, fake: fake
-        # self.discriminator = TeddyDiscriminator((img_height, dis_patch_width), (img_height, gen_patch_width), dim=dis_dim, channels=img_channels)
-
-        self.writer_discriminator = models.resnet18(num_classes=wid_num_authors) if kwargs['weight_writer_id'] > 0 else None
-        
+        self.padding_cat = PaddingCat(padding_value=1, cat_dim=1) if not single_img_dis else lambda real, fake: fake       
 
         self.dis_patch_sampler = UnfoldPatchSampler(dis_patch_width, img_height, dis_patch_count)
         self.style_patch_sampler = UnfoldPatchSampler(style_patch_width, img_height, style_patch_count)

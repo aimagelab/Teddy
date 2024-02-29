@@ -143,11 +143,11 @@ def train(rank, args):
         clock.start()
 
         for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
+            clock.stop()  # time/data_load
             batch['ocr_real_train'] = args.ocr_scheduler == 'train'
             batch['ocr_real_eval'] = idx == len(loader) - 1 or args.ocr_real
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                clock.stop()  # time/data_load
 
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 if args.weight_dis_global > 0 or args.weight_dis_local > 0:
                     with Clock(collector, 'time/gen_text', clock_verbose):
@@ -253,30 +253,28 @@ def train(rank, args):
                 collector['loss_gen'] = loss_gen
                 collector['loss_ocr'] = loss_ocr
                 collector['loss_wid'] = loss_wid
+                # end autocast
 
-                clock.start()  # time/data_load
-
-            if idx % args.dis_critic_num == 0:
-                optimizer_dis.zero_grad()
+            optimizer_dis.zero_grad()
             optimizer_wid.zero_grad()
             optimizer_gen.zero_grad()
             optimizer_ocr.zero_grad()
 
             if idx % args.dis_critic_num == 0 and (args.weight_dis_global > 0 or args.weight_dis_local > 0):
-                with GradSwitch(teddy, teddy.discriminator, teddy.discriminator):
-                    scaler.scale(loss_dis).backward(retain_graph=True)
-            with GradSwitch(teddy, teddy.generator):
-                scaler.scale(loss_gen).backward(retain_graph=True)
+                with Clock(collector, 'time/backward_dis', clock_verbose):
+                    with GradSwitch(teddy, teddy.discriminator):
+                        scaler.scale(loss_dis).backward(retain_graph=True)
+            with Clock(collector, 'time/backward_gen', clock_verbose):
+                with GradSwitch(teddy, teddy.generator):
+                    scaler.scale(loss_gen).backward(retain_graph=True)
             if batch['ocr_real_train']:
-                with GradSwitch(teddy, teddy.ocr):
-                    scaler.scale(loss_ocr).backward(retain_graph=True)
+                with Clock(collector, 'time/backward_ocr', clock_verbose):
+                    with GradSwitch(teddy, teddy.ocr):
+                        scaler.scale(loss_ocr).backward(retain_graph=True)
             if args.weight_writer_id > 0:
-                with GradSwitch(teddy, teddy.writer_discriminator):
-                    scaler.scale(loss_wid).backward(retain_graph=True)
-
-            # Check gradient magnitude
-            # collector['grad/transformer'] = np.array([param.grad.float().abs().mean().item() for param in transformer_params]).mean()
-            # collector['grad/cnn_decoder'] = np.array([param.grad.float().abs().mean().item() for param in cnn_decoder_params]).mean()
+                with Clock(collector, 'time/backward_wid', clock_verbose):
+                    with GradSwitch(teddy, teddy.writer_discriminator):
+                        scaler.scale(loss_wid).backward(retain_graph=True)
 
             if idx % args.dis_critic_num == 0 and (args.weight_dis_global > 0 or args.weight_dis_local > 0):
                 scaler.step(optimizer_dis)
@@ -285,7 +283,9 @@ def train(rank, args):
             scaler.step(optimizer_ocr) if batch['ocr_real_train'] else optimizer_ocr.step()
 
             scaler.update()
+            clock.start()  # time/data_load
 
+        # end of epoch
         collector['time/epoch_train'] = time.time() - epoch_start_time
         collector['time/iter_train'] = (time.time() - epoch_start_time) / len(dataset)
 
@@ -364,10 +364,6 @@ def train(rank, args):
 
         collector.reset()
         teddy.collector.reset()
-
-        # scheduler_dis.step()
-        # scheduler_gen.step()
-    cleanup()
 
 
 def setup(rank, world_size):
@@ -506,7 +502,4 @@ if __name__ == '__main__':
     if args.device == 'auto':
         args.device = f'cuda:{np.argmax(free_mem_percent())}'
 
-    if args.ddp:
-        mp.spawn(cleanup_on_error, args=(train, args), nprocs=args.world_size, join=True)
-    else:
-        train(0, args)
+    train(0, args)
