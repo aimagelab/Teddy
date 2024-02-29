@@ -397,10 +397,10 @@ def add_arguments(parser):
     parser.add_argument('--lr_dis', type=float, default=0.00005)
     parser.add_argument('--lr_ocr', type=float, default=0.0001)
     parser.add_argument('--lr_wid', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
-    parser.add_argument('--num_workers', type=int, default=8, help="Number of workers")
+    parser.add_argument('--num_workers', type=int, default=4, help="Number of workers")
     parser.add_argument('--resume', action='store_true', help="Resume")
     parser.add_argument('--wandb', action='store_true', help="Use wandb")
     parser.add_argument('--start_epochs', type=int, default=0, help="Start epochs")
@@ -427,7 +427,7 @@ def add_arguments(parser):
     
     # datasets
     parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
-    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_xl',], help="Datasets")
+    parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_sm',], help="Datasets")
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
 
     # Teddy general
@@ -481,7 +481,7 @@ def add_arguments(parser):
     parser.add_argument('--dis_patch_count', type=int, default=8, help="Discriminator patch count")
 
     # Teddy style
-    parser.add_argument('--style_patch_width', type=int, default=256, help="Style patch width")
+    parser.add_argument('--style_patch_width', type=int, default=128, help="Style patch width")
     parser.add_argument('--style_patch_count', type=int, default=4, help="Style patch count")
     return parser
 
