@@ -36,5 +36,12 @@ wget https://github.com/aimagelab/Teddy/releases/download/pkl/iam_lines_l_train.
 
 ## Training
 ```bash
-python train.py
+python train.py --wandb
 ```
+The `--wandb` flag enables the log on wandb.
+
+## Test the code
+```bash
+python train.py --dryrun
+```
+The `--dryrun` flag suppresses the logging on wandb if set and disables the checkpoint saving.
