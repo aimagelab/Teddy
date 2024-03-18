@@ -425,7 +425,7 @@ def add_arguments(parser):
     parser.add_argument('--single_img_dis', action='store_true', help="Single img discriminator")
     
     # datasets
-    parser.add_argument('--root_path', type=str, default='/mnt/scratch/datasets', help="Root path")
+    parser.add_argument('--root_path', type=str, default='files/datasets', help="Root path")
     parser.add_argument('--datasets', type=str, nargs='+', default=['iam_lines_l',], help="Datasets")
     parser.add_argument('--db_preload', action='store_true', help="Preload dataset")
 
