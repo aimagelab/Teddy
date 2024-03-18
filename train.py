@@ -290,6 +290,8 @@ def train(rank, args):
         collector['time/iter_train'] = (time.time() - epoch_start_time) / len(dataset)
 
         epoch_start_time = time.time()
+        teddy.eval()
+
         if args.wandb and rank == 0:
             with torch.inference_mode():
                 img_grid = make_grid(preds['fakes'], nrow=1, normalize=True, value_range=(-1, 1))
@@ -342,13 +344,10 @@ def train(rank, args):
             # Evaluation
             try:
                 evaluation_loader = setup_loader(rank, args, args.eval_dataset) if evaluation_loader else evaluation_loader
-                teddy.eval()
                 generate_images(rank, args, teddy, evaluation_loader)
                 collector['scores/HWD', 'scores/FID', 'scores/KID'] = evaluator.compute_metrics(dst.parent / 'saved_images' / dst.stem / 'test')
             except Exception as e:
                 print(f"Error during evaluation: {e}")
-            finally:
-                teddy.train()
 
         if args.wandb and rank == 0 and not args.dryrun:
             collector.print(f'Epoch {epoch} | ')

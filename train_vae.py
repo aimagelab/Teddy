@@ -20,6 +20,7 @@ from torch.profiler import tensorboard_trace_handler
 
 from model.teddy import Teddy, freeze, unfreeze
 from model.vae import VariationalAutoencoder
+from model.convvae import ConvVAE
 from datasets import dataset_factory
 from util.ocr_scheduler import RandCheckpointScheduler, SineCheckpointScheduler, AlternatingScheduler, RandReducingScheduler, OneLinearScheduler, RandomLinearScheduler
 from util.losses import SquareThresholdMSELoss, NoCudnnCTCLoss, AdversarialHingeLoss
@@ -70,14 +71,15 @@ def train(rank, args):
     loader = ChunkLoader(loader, args.epochs_size)
 
 
-    vae = VariationalAutoencoder(args.latent_dim, args.img_channels).to(device)
+    # vae = VariationalAutoencoder(args.latent_dim, args.img_channels).to(device)
+    vae = ConvVAE(args.latent_dim, args.img_channels).to(device)
 
     optimizer_vae = torch.optim.AdamW(vae.parameters(), lr=args.lr_vae)
-    scheduler_vae = torch.optim.lr_scheduler.ConstantLR(optimizer_vae, args.lr_vae)
+    # scheduler_vae = torch.optim.lr_scheduler.ConstantLR(optimizer_vae, args.lr_vae)
 
     scaler = GradScaler()
 
-    mse_criterion = torch.nn.MSELoss()
+    mse_criterion = torch.nn.MSELoss(reduction='sum')
 
     if args.wandb and rank == 0 and not args.dryrun:
         name = f"{args.run_id}_{args.tag}"
@@ -94,28 +96,46 @@ def train(rank, args):
         clock = Clock(collector, 'time/data_load', clock_verbose)
         clock.start()
 
-        for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                clock.stop()  # time/data_load
+        alpha = min(1, epoch / 10)
+        # alpha = 0
+        errors = 0
 
+        good_preds = None
+        for idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f'Epoch {epoch}', disable=rank != 0):
+            clock.stop()  # time/data_load
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
                 imgs = batch['style_img'].to(device)
-                preds = vae(imgs)
+
+                preds, mu, logvar = vae(imgs)
 
                 loss_mse = mse_criterion(preds, imgs)
+                kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                loss = loss_mse + alpha * kld
 
-                if torch.isnan(loss_mse):
-                    print("loss_mse is NaN")
-                    print(f'Epoch {epoch} | {idx} | {loss_mse} | {preds.shape} | {imgs.shape} | {imgs.min()} | {imgs.max()} | {preds.min()} | {preds.max()}')
-                else:
-                    collector['loss_mse'] = loss_mse
+            if torch.isnan(loss):
+                # print(f'ERROR: loss is NaN - Epoch {epoch} | {idx} | {loss} | {preds.shape} | {imgs.shape} | {imgs.min()} | {imgs.max()} | {preds.min()} | {preds.max()}')
+                optimizer_vae.zero_grad()
+                errors += 1
+                # if errors > 50:
+                #     raise ValueError("Too many NaNs in this epoch")
+                continue
 
-                clock.start()  # time/data_load
+            collector['loss_mse'] = loss_mse
+            collector['kld'] = kld
+            collector['loss'] = loss
+            good_preds = preds
 
             optimizer_vae.zero_grad()
-            scaler.scale(loss_mse).backward()
+            scaler.scale(loss).backward()
+
+            scaler.unscale_(optimizer_vae)
+            torch.nn.utils.clip_grad_value_(vae.parameters(), 1)
+
             scaler.step(optimizer_vae)
             scaler.update()
+            clock.start()  # time/data_load
 
+        collector['errors'] = errors
         collector['time/epoch_train'] = time.time() - epoch_start_time
         collector['time/iter_train'] = (time.time() - epoch_start_time) / len(dataset)
 
@@ -123,7 +143,7 @@ def train(rank, args):
         if args.wandb and rank == 0:
             with torch.inference_mode():
                 img_grid = make_grid(imgs[:32], nrow=1, normalize=True, value_range=(-1, 1))
-                pred_grid = make_grid(preds[:32], nrow=1, normalize=True, value_range=(-1, 1))
+                pred_grid = make_grid(good_preds[:32], nrow=1, normalize=True, value_range=(-1, 1))
 
             collector['time/epoch_inference'] = time.time() - epoch_start_time
 
@@ -140,11 +160,11 @@ def train(rank, args):
             torch.save({
                 'model': vae.state_dict(),
                 'optimizer_vae': optimizer_vae.state_dict(),
-                'scheduler_vae': scheduler_vae.state_dict(),
+                # 'scheduler_vae': scheduler_vae.state_dict(),
             }, dst)
 
         collector.reset()
-        scheduler_vae.step()
+        # scheduler_vae.step()
     cleanup()
 
 
@@ -174,7 +194,7 @@ def cleanup_on_error(rank, fn, *args, **kwargs):
     
 
 def add_arguments(parser):
-    parser.add_argument('--lr_vae', type=float, default=0.001)
+    parser.add_argument('--lr_vae', type=float, default=0.00001)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--seed', type=int, default=742)
     parser.add_argument('--device', type=str, default='auto', help="Device")
