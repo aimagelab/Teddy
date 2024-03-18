@@ -48,7 +48,7 @@ The `--dryrun` flag suppresses the logging on wandb if set and disables the chec
 
 ## Time incremental bug
 ```bash
-(teddy) vpippi@collepino:~/Teddy_nvidia$ python train.py --dryrun
+(teddy) vpippi@collepino:~/Teddy$ python train.py --dryrun
 Loading datasets train: 100%|█████████████████████████████████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.91s/it]
 Dataset has 25592 samples.
 initialize network with N02
